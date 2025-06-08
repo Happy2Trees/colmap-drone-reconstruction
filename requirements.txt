@@ -1,0 +1,13 @@
+numpy
+requests
+opencv-python
+
+# Co-tracker dependencies
+matplotlib
+flow_vis
+tqdm
+tensorboard
+imageio[ffmpeg]
+moviepy
+imutils==0.5.4
+mediapy==1.2.2

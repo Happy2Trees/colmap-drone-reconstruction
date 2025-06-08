@@ -1,0 +1,26 @@
+version: "3.8"
+services:
+  training:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: colmap
+    container_name: colmap_ct
+    ipc: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=4,5,6,7
+    volumes:
+      - /hdd3:/hdd3
+      - /hdd2:/hdd2
+      - /hdd1:/hdd1
+    runtime: nvidia
+    cpuset: "48-95"
+    ports:
+      - "6022:6022"
+    stdin_open: true  # -i 옵션: 표준 입력 활성화
+    tty: true         # -t 옵션: TTY 할당
+    deploy:
+      resources:
+        limits:
+          memory: 128g
+          # deploy 섹션에서는 memory-swap 제한은 지원되지 않습니다.
