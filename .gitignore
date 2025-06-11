@@ -91,6 +91,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Claude settings
+.claude/
+
 # Logs
 *.log
 logs/

@@ -1,3 +1,9 @@
+[submodule "submodules/particle-sfm"]
+	path = submodules/particle-sfm
+	url = https://github.com/bytedance/particle-sfm.git
+[submodule "submodules/SuperPoint"]
+	path = submodules/SuperPoint
+	url = https://github.com/magicleap/SuperPointPretrainedNetwork.git
 [submodule "submodules/co-tracker"]
 	path = submodules/co-tracker
 	url = https://github.com/facebookresearch/co-tracker.git
