@@ -96,7 +96,7 @@ RUN echo "Etc/UTC" > /etc/timezone && \
 
 
 # 작업 디렉토리 설정
-WORKDIR /hdd2/0321_block_drone_video/colmap
+WORKDIR /temp
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 

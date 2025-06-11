@@ -1,0 +1,33 @@
+# Dense tracking configuration
+# More windows with smaller intervals for dense coverage
+
+# Features to extract
+features:
+  - cotracker
+
+# CoTracker settings for dense tracking
+cotracker:
+  window_size: 32      # Smaller windows
+  interval: 5          # Small interval = dense overlap
+  initialization_method: grid
+  grid_size: 25        # Denser grid (25x25 = 625 points)
+  device: cuda
+
+# Visualization settings
+visualization:
+  enabled: true
+  save_video: true
+  save_frames: false    # Skip frames for dense tracking (too many)
+  fps: 15               # Higher FPS for smoother video
+  point_size: 4         # Smaller points for dense display
+  trail_length: 15
+
+# Preprocessing settings
+preprocessing:
+  enabled: true          # Enable preprocessing before feature extraction
+  target_width: 1920    # Target width for resized images
+  target_height: 1080   # Target height for resized images
+  force_overwrite: false # Overwrite existing preprocessed data
+
+# General settings
+log_level: INFO
