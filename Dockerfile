@@ -99,14 +99,28 @@ RUN echo "Etc/UTC" > /etc/timezone && \
 WORKDIR /temp
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
-
 # Co-tracker 설치
 COPY submodules/co-tracker ./submodules/co-tracker
 RUN pip install -e ./submodules/co-tracker
 
 
+# xformers
+RUN git clone --branch v0.0.29.post3 --recursive https://github.com/facebookresearch/xformers.git
+RUN git config --global --add safe.directory /temp/xformers && \
+    git config --global --add safe.directory /temp/xformers/third_party/flash-attention && \
+    git config --global --add safe.directory /temp/xformers/third_party/cutlass
+RUN cd xformers && echo '' > requirements.txt
+WORKDIR /temp/xformers
+RUN pip install ninja
+
+# A6000 GPU (Ampere, compute capability 8.6)를 위한 설정
+ENV TORCH_CUDA_ARCH_LIST="8.6"
+ARG MAX_JOBS=16
+RUN pip install -vv -e .
+
 
 # Install nvm, Node.js, and Claude Code
+WORKDIR /temp
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && \
     export NVM_DIR="$HOME/.nvm" && \
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && \
@@ -119,7 +133,6 @@ RUN echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc && \
     echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc
 
     
-
 # 컨테이너 시작 시 bash 실행
 COPY --from=builder /colmap-install/ /usr/local/
 

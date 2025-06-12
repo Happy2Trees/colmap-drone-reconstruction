@@ -1,6 +1,5 @@
-"""Depth estimation modules (future implementation)"""
+"""Depth estimation modules for precompute pipeline."""
 
-# Future imports:
-# from .geometrycrafter_extractor import GeometryCrafterExtractor
+from .base_depth_estimator import BaseDepthEstimator
 
-__all__ = []
+__all__ = ['BaseDepthEstimator']

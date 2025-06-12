@@ -3,7 +3,11 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(grep:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(echo:*)",
+      "Bash(echo $HOME)",
+      "Bash(cat:*)",
+      "Bash(env)"
     ],
     "deny": []
   }

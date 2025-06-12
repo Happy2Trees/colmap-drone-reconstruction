@@ -1,6 +1,11 @@
-numpy
+# Core dependencies
 requests
 opencv-python
+Pillow
+scipy
+pyyaml
+decord>=0.6.0  # For video reading
+
 
 # Co-tracker dependencies
 matplotlib
@@ -11,3 +16,26 @@ imageio[ffmpeg]
 moviepy
 imutils==0.5.4
 mediapy==1.2.2
+
+# GeometryCrafter dependencies
+diffusers>=0.31.0
+transformers>=4.39.1
+accelerate>=0.24.0
+safetensors>=0.4.0
+einops>=0.8.0
+kornia>=0.7.0
+sentencepiece
+trimesh
+rembg
+
+# MoGe (Microsoft Monocular Geometry Estimation)
+# Install from GitHub for depth prior
+git+https://github.com/microsoft/MoGe.git
+
+# Optional optimizations
+# xformers is already installed in Dockerfile (v0.0.29.post3)
+
+# Additional utilities
+h5py>=3.8.0  # For HDF5 file handling
+scikit-image>=0.20.0  # For image processing
+pandas>=2.0.0  # For data management

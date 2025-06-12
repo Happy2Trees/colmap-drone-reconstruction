@@ -1,0 +1,73 @@
+# Configuration for precompute pipeline with GeometryCrafter depth estimation
+
+# Features to extract
+features:
+  # - cotracker  # Already extracted
+  - depth
+  # - flow
+
+# CoTracker settings (kept for reference but not used)
+cotracker:
+  window_size: 48
+  interval: 10
+  initialization_method: grid  # Options: grid, sift, superpoint
+  grid_size: 20
+  device: cuda
+
+# GeometryCrafter depth estimation settings
+depth:
+  model: geometrycrafter
+  device: cuda
+  
+  # Model settings (matching submodule defaults)
+  model_type: diff        # 'diff' (default, higher quality) or 'determ' (faster)
+  cache_dir: workspace/cache  # Cache directory for model weights
+  
+  # Video processing settings (matching submodule defaults)
+  window_size: 110        # Temporal window size for video processing
+  overlap: 25             # Overlap between windows for long videos
+  decode_chunk_size: 8    # Chunk size for VAE decoding
+  
+  # Inference settings (matching submodule defaults)
+  num_inference_steps: 5  # Number of denoising steps (for diff model)
+  guidance_scale: 1.0     # Guidance scale (for diff model)
+  downsample_ratio: 1.0   # Downsample input for faster processing
+  
+  # Model options (matching submodule defaults)
+  force_projection: true  # Force perspective projection
+  force_fixed_focal: true # Use fixed focal length
+  use_extract_interp: false # Use interpolation in extraction
+  low_memory_usage: True # Enable low memory mode (slower)
+  
+  # Output settings
+  save_visualization: true  # Save depth map visualizations
+  output_format: npy      # Output format: 'npy', 'png', 'pfm'
+  save_moge_prior: false  # Also save MoGe depth prior separately
+  save_ply: true          # Save 3D point clouds as PLY files
+  
+  # Random seed (matching submodule default)
+  seed: 42
+
+# Optical flow settings (future)
+optical_flow:
+  model: raft
+  device: cuda
+
+# Visualization settings
+visualization:
+  enabled: false         # Disable visualization for depth-only run
+  save_video: false      # Save MP4 video
+  save_frames: false     # Save sample frames
+  fps: 10               # Output video FPS
+  point_size: 6         # Size of tracked points
+  trail_length: 20      # Length of motion trails
+
+# Preprocessing settings
+preprocessing:
+  enabled: true          # Enable preprocessing before feature extraction
+  target_width: 1024     # Target width for resized images (GeometryCrafter default)
+  target_height: 576     # Target height for resized images (GeometryCrafter default)
+  force_overwrite: false # Overwrite existing preprocessed data
+
+# General settings
+log_level: INFO

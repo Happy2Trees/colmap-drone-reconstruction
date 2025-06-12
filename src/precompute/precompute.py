@@ -10,8 +10,15 @@ import sys
 
 from .trackers.cotracker_extractor import CoTrackerExtractor
 from ..preprocessing import preprocess_scene
+
+# Conditional imports for optional modules
+try:
+    from .depth.geometrycrafter import GeometryCrafterExtractor
+    GEOMETRYCRAFTER_AVAILABLE = True
+except ImportError:
+    GEOMETRYCRAFTER_AVAILABLE = False
+    
 # Future imports:
-# from .depth.geometrycrafter_extractor import GeometryCrafterExtractor
 # from .optical_flow.raft_extractor import RAFTExtractor
 
 
@@ -36,9 +43,19 @@ class PrecomputePipeline:
                 superpoint_weights=cotracker_config.get('superpoint_weights', None)
             )
         
-        # Future: Initialize depth and flow extractors
+        # Initialize depth extractor
         if 'depth' in config['features']:
-            logging.warning("Depth extraction not yet implemented")
+            if GEOMETRYCRAFTER_AVAILABLE:
+                logging.info("Initializing GeometryCrafter depth extractor...")
+                depth_config = config.get('depth', {})
+                try:
+                    logging.info("Initializing GeometryCrafter implementation")
+                    self.extractors['depth'] = GeometryCrafterExtractor(depth_config)
+                except Exception as e:
+                    logging.error(f"Failed to initialize GeometryCrafter: {e}")
+                    logging.warning("Depth extraction will be skipped")
+            else:
+                logging.warning("GeometryCrafter not available. Make sure GeometryCrafter is in submodules/")
             
         if 'flow' in config['features']:
             logging.warning("Optical flow extraction not yet implemented")
@@ -180,7 +197,26 @@ class PrecomputePipeline:
                     'error': str(e)
                 }
         
-        # Future: Extract depth and optical flow
+        # Extract depth maps
+        if 'depth' in self.extractors:
+            logging.info("Extracting depth maps with GeometryCrafter...")
+            try:
+                depth_results = self.extractors['depth'].extract_depth(image_dir)
+                results['depth'] = {
+                    'status': 'success',
+                    'num_frames': depth_results['num_frames'],
+                    'output_dir': str(depth_results['depth_dir']),
+                    'metadata': depth_results['metadata']
+                }
+                logging.info(f"Depth extraction complete: {depth_results['num_frames']} frames processed")
+            except Exception as e:
+                logging.error(f"Depth extraction failed: {e}")
+                results['depth'] = {
+                    'status': 'failed',
+                    'error': str(e)
+                }
+        
+        # Future: Extract optical flow
         
         # Save results summary
         summary_path = processed_scene_dir / 'precompute_summary.json'
