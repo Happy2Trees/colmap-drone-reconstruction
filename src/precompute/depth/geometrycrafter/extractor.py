@@ -5,12 +5,14 @@ import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import gc
 
 import cv2
 import numpy as np
 import torch
 from diffusers.training_utils import set_seed
 from tqdm import tqdm
+import psutil
 
 # Import ported models from local directory
 from .models import (
@@ -156,27 +158,47 @@ class GeometryCrafterExtractor(BaseDepthEstimator):
     
     def extract_depth(self, 
                      image_dir: Path, 
-                     output_path: Optional[Path] = None) -> Dict:
-        """Extract depth maps from all images in a directory.
+                     output_path: Optional[Path] = None,
+                     frame_start: Optional[int] = None,
+                     frame_end: Optional[int] = None) -> Dict:
+        """Extract depth maps from images in a directory.
         
-        For GeometryCrafter, we process the entire sequence as a video
-        to maintain temporal consistency.
+        For GeometryCrafter, we process the sequence as a video
+        to maintain temporal consistency. Can process a specific range of frames.
         
         Args:
             image_dir: Path to directory containing input images
             output_path: Optional path to save depth maps
+            frame_start: Starting frame index (inclusive), None for 0
+            frame_end: Ending frame index (exclusive), None for all frames
             
         Returns:
             Dictionary containing extraction results
         """
         # Get sorted image paths
-        image_paths = sorted(image_dir.glob("*.jpg")) + sorted(image_dir.glob("*.png"))
-        if not image_paths:
+        all_image_paths = sorted(image_dir.glob("*.jpg")) + sorted(image_dir.glob("*.png"))
+        if not all_image_paths:
             raise ValueError(f"No images found in {image_dir}")
         
-        logger.info(f"Found {len(image_paths)} images to process")
+        # Apply frame range if specified
+        if frame_start is None:
+            frame_start = 0
+        if frame_end is None:
+            frame_end = len(all_image_paths)
         
-        # Get output path
+        # Validate range
+        frame_start = max(0, frame_start)
+        frame_end = min(len(all_image_paths), frame_end)
+        
+        if frame_start >= frame_end:
+            raise ValueError(f"Invalid frame range: {frame_start} to {frame_end}")
+        
+        # Get subset of images
+        image_paths = all_image_paths[frame_start:frame_end]
+        
+        logger.info(f"Processing frames {frame_start} to {frame_end-1} ({len(image_paths)} frames)")
+        
+        # Get output path - always use the same directory for all segments
         output_dir = self.get_output_path(image_dir, output_path)
         output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -262,6 +284,17 @@ class GeometryCrafterExtractor(BaseDepthEstimator):
         depth_maps = rec_point_map[..., 2].detach().cpu().numpy()
         valid_masks = rec_valid_mask.detach().cpu().numpy()
         
+        # Extract point maps for PLY if needed before clearing GPU memory
+        if self.save_ply:
+            point_maps = rec_point_map.detach().cpu().numpy()
+        
+        # Clear GPU memory immediately after transferring to CPU
+        del rec_point_map
+        del rec_valid_mask
+        del frames_tensor
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         for i, (depth, mask, img_path) in enumerate(tqdm(
             zip(depth_maps, valid_masks, image_paths), 
             total=len(image_paths), 
@@ -269,7 +302,7 @@ class GeometryCrafterExtractor(BaseDepthEstimator):
         )):
             output_file = output_dir / img_path.stem
             
-            # Save depth map
+            # Save depth map with segment information
             self.save_depth_map(
                 depth, 
                 output_file, 
@@ -278,7 +311,10 @@ class GeometryCrafterExtractor(BaseDepthEstimator):
                     'model': 'GeometryCrafter',
                     'model_type': self.model_type,
                     'window_size': self.window_size,
-                    'overlap': self.overlap
+                    'overlap': self.overlap,
+                    'frame_index': frame_start + i,
+                    'segment_start': frame_start,
+                    'segment_end': frame_end
                 }
             )
             
@@ -291,7 +327,7 @@ class GeometryCrafterExtractor(BaseDepthEstimator):
         # Save point clouds as PLY files if requested
         if self.save_ply:
             logger.info("Saving point clouds as PLY files...")
-            point_maps = rec_point_map.detach().cpu().numpy()
+            # point_maps already extracted before clearing GPU memory
             
             # Create PLY output directory
             ply_dir = output_dir.parent / "point_clouds"
@@ -309,9 +345,22 @@ class GeometryCrafterExtractor(BaseDepthEstimator):
                 ply_path = ply_dir / f"{img_path.stem}.ply"
                 self.save_point_cloud_ply(points, mask, rgb_image, ply_path)
         
+        # Clear GPU memory after processing segment
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        # Log memory usage
+        if torch.cuda.is_available():
+            gpu_memory_allocated = torch.cuda.memory_allocated(self.device) / 1024**3
+            gpu_memory_reserved = torch.cuda.memory_reserved(self.device) / 1024**3
+            logger.info(f"GPU Memory - Allocated: {gpu_memory_allocated:.2f} GB, Reserved: {gpu_memory_reserved:.2f} GB")
+        
         # Create metadata file
         metadata = {
             'num_frames': len(image_paths),
+            'total_frames': len(all_image_paths),
+            'segment_start': frame_start,
+            'segment_end': frame_end,
             'model': 'GeometryCrafter',
             'model_type': self.model_type,
             'window_size': self.window_size,
@@ -322,7 +371,13 @@ class GeometryCrafterExtractor(BaseDepthEstimator):
             'downsample_ratio': self.downsample_ratio
         }
         
-        with open(output_dir.parent / 'depth_metadata.json', 'w') as f:
+        # For segmented processing, save segment-specific metadata
+        if frame_start > 0 or frame_end < len(all_image_paths):
+            metadata_filename = f'depth_metadata_segment_{frame_start:06d}_{frame_end:06d}.json'
+        else:
+            metadata_filename = 'depth_metadata.json'
+        
+        with open(output_dir.parent / metadata_filename, 'w') as f:
             json.dump(metadata, f, indent=2)
         
         return {

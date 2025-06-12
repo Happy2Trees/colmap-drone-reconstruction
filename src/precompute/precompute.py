@@ -154,12 +154,12 @@ class PrecomputePipeline:
         file_handler = logging.FileHandler(log_path)
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logging.getLogger().addHandler(file_handler)
-        
         logging.info(f"Starting precompute pipeline for scene: {processed_scene_dir}")
         if processed_scene_dir != scene_dir_path:
             logging.info(f"Original scene: {scene_dir_path}")
         logging.info(f"Configuration: {json.dumps(self.config, indent=2)}")
-        
+
+
         # Extract features
         results = {}
         
@@ -201,14 +201,85 @@ class PrecomputePipeline:
         if 'depth' in self.extractors:
             logging.info("Extracting depth maps with GeometryCrafter...")
             try:
-                depth_results = self.extractors['depth'].extract_depth(image_dir)
+                # Get total number of frames
+                image_paths = sorted(image_dir.glob("*.jpg")) + sorted(image_dir.glob("*.png"))
+                total_frames = len(image_paths)
+                
+                # Get segment size from config
+                depth_config = self.config.get('depth', {})
+                segment_size = depth_config.get('segment_size', 1000)
+                
+                logging.info(f"Total frames: {total_frames}, processing in segments of {segment_size}")
+                
+                # Process in segments
+                all_segment_results = []
+                frame_idx = 0
+                
+                while frame_idx < total_frames:
+                    segment_end = min(frame_idx + segment_size, total_frames)
+                    logging.info(f"Processing frames {frame_idx} to {segment_end-1}...")
+                    
+                    try:
+                        segment_results = self.extractors['depth'].extract_depth(
+                            image_dir, 
+                            frame_start=frame_idx,
+                            frame_end=segment_end
+                        )
+                        all_segment_results.append(segment_results)
+                    except Exception as e:
+                        logging.error(f"Segment {frame_idx}-{segment_end} failed: {e}")
+                        raise
+                    
+                    frame_idx = segment_end
+                
+                # Combine results
+                total_processed = sum(r['num_frames'] for r in all_segment_results)
+                
+                # Create consolidated metadata file
+                if all_segment_results:
+                    output_dir = all_segment_results[0]['depth_dir']
+                    consolidated_metadata = {
+                        'num_frames': total_processed,
+                        'total_frames': total_frames,
+                        'num_segments': len(all_segment_results),
+                        'segment_size': segment_size,
+                        'model': all_segment_results[0]['metadata']['model'],
+                        'model_type': all_segment_results[0]['metadata']['model_type'],
+                        'window_size': all_segment_results[0]['metadata']['window_size'],
+                        'overlap': all_segment_results[0]['metadata']['overlap'],
+                        'height': all_segment_results[0]['metadata']['height'],
+                        'width': all_segment_results[0]['metadata']['width'],
+                        'output_format': all_segment_results[0]['metadata']['output_format'],
+                        'downsample_ratio': all_segment_results[0]['metadata']['downsample_ratio'],
+                        'segments': [{
+                            'start': r['metadata']['segment_start'],
+                            'end': r['metadata']['segment_end'],
+                            'frames': r['num_frames']
+                        } for r in all_segment_results]
+                    }
+                    
+                    # Save consolidated metadata
+                    with open(output_dir.parent / 'depth_metadata.json', 'w') as f:
+                        json.dump(consolidated_metadata, f, indent=2)
+                    logging.info("Saved consolidated depth metadata")
+                
                 results['depth'] = {
                     'status': 'success',
-                    'num_frames': depth_results['num_frames'],
-                    'output_dir': str(depth_results['depth_dir']),
-                    'metadata': depth_results['metadata']
+                    'num_frames': total_processed,
+                    'total_frames': total_frames,
+                    'num_segments': len(all_segment_results),
+                    'segment_size': segment_size,
+                    'output_dir': str(all_segment_results[0]['depth_dir']) if all_segment_results else None,
+                    'metadata': {
+                        'model': all_segment_results[0]['metadata']['model'] if all_segment_results else 'GeometryCrafter',
+                        'segments': [{
+                            'start': r['metadata']['segment_start'],
+                            'end': r['metadata']['segment_end'],
+                            'frames': r['num_frames']
+                        } for r in all_segment_results]
+                    }
                 }
-                logging.info(f"Depth extraction complete: {depth_results['num_frames']} frames processed")
+                logging.info(f"Depth extraction complete: {total_processed} frames processed in {len(all_segment_results)} segments")
             except Exception as e:
                 logging.error(f"Depth extraction failed: {e}")
                 results['depth'] = {

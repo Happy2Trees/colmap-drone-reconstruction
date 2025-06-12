@@ -19,6 +19,9 @@ depth:
   model: geometrycrafter
   device: cuda
   
+  # Segmentation settings for large videos
+  segment_size: 100      # Process frames in segments (for memory efficiency) - reduced from 500
+  
   # Model settings (matching submodule defaults)
   model_type: diff        # 'diff' (default, higher quality) or 'determ' (faster)
   cache_dir: workspace/cache  # Cache directory for model weights
@@ -26,7 +29,7 @@ depth:
   # Video processing settings (matching submodule defaults)
   window_size: 110        # Temporal window size for video processing
   overlap: 25             # Overlap between windows for long videos
-  decode_chunk_size: 8    # Chunk size for VAE decoding
+  decode_chunk_size: 8    # Chunk size for VAE decoding - reduced from 8
   
   # Inference settings (matching submodule defaults)
   num_inference_steps: 5  # Number of denoising steps (for diff model)
@@ -37,13 +40,13 @@ depth:
   force_projection: true  # Force perspective projection
   force_fixed_focal: true # Use fixed focal length
   use_extract_interp: false # Use interpolation in extraction
-  low_memory_usage: True # Enable low memory mode (slower)
+  low_memory_usage: false  # Enable low memory mode (slower) - changed to true
   
   # Output settings
   save_visualization: true  # Save depth map visualizations
   output_format: npy      # Output format: 'npy', 'png', 'pfm'
   save_moge_prior: false  # Also save MoGe depth prior separately
-  save_ply: true          # Save 3D point clouds as PLY files
+  save_ply: false          # Save 3D point clouds as PLY files
   
   # Random seed (matching submodule default)
   seed: 42

@@ -4,6 +4,7 @@ import gc
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from diffusers.pipelines.stable_video_diffusion.pipeline_stable_video_diffusion import (
     _resize_with_antialiasing,
@@ -48,7 +49,7 @@ def point_map_xy2intrinsic_map(point_map_xy):
     return torch.cat([nc_map, nf_map], dim=-1)
 
 def robust_min_max(tensor, quantile=0.99):
-    T, H, W = tensor.shape
+    T = tensor.shape[0]
     min_vals = []
     max_vals = []
     for i in range(T):
@@ -57,7 +58,7 @@ def robust_min_max(tensor, quantile=0.99):
     return min(min_vals), max(max_vals) 
 
 class GeometryCrafterDiffPipeline(StableVideoDiffusionPipeline):
-
+    
     @torch.inference_mode()
     def encode_video(
         self,
@@ -107,20 +108,51 @@ class GeometryCrafterDiffPipeline(StableVideoDiffusionPipeline):
         return video_latents
     
     @torch.inference_mode()
-    def produce_priors(self, prior_model, frame, chunk_size=8, low_memory_usage=False):
-        T, _, H, W = frame.shape 
-        # frame = (frame + 1) / 2
+    def produce_priors(self, prior_model, frame, chunk_size=8, low_memory_usage=False, cache_dir=None):
+        T = frame.shape[0]
+        
+        # Compute priors with progress bar
+        logger.info(f"Computing priors for {T} frames (chunk_size={chunk_size})...")
         pred_point_maps = []
         pred_masks = []
-        for i in range(0, len(frame), chunk_size):
-            pred_p, pred_m = prior_model.forward_image(
-                frame[i:i+chunk_size].to(self._execution_device) if low_memory_usage else frame[i:i+chunk_size]
-            )
-            pred_point_maps.append(pred_p.cpu() if low_memory_usage else pred_p)
-            pred_masks.append(pred_m.cpu() if low_memory_usage else pred_m)
+        
+        # Calculate total chunks for progress bar
+        total_chunks = (T + chunk_size - 1) // chunk_size
+        
+        with tqdm(range(0, T, chunk_size), total=total_chunks, desc="Processing frames") as pbar:
+            for i in pbar:
+                chunk_end = min(i + chunk_size, T)
+                pbar.set_description(f"Processing frames {i+1}-{chunk_end}/{T}")
+                
+                pred_p, pred_m = prior_model.forward_image(
+                    frame[i:chunk_end].to(self._execution_device) if low_memory_usage else frame[i:chunk_end]
+                )
+                pred_point_maps.append(pred_p.cpu() if low_memory_usage else pred_p)
+                pred_masks.append(pred_m.cpu() if low_memory_usage else pred_m)
+                
+                # Clear GPU memory after each chunk
+                if low_memory_usage and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                # Update progress with memory info
+                if torch.cuda.is_available():
+                    gpu_mem = torch.cuda.memory_allocated() / 1024**3
+                    pbar.set_postfix({"GPU_GB": f"{gpu_mem:.2f}"})
+        
         pred_point_maps = torch.cat(pred_point_maps, dim=0)
         pred_masks = torch.cat(pred_masks, dim=0)
         
+        # Clear memory before processing
+        if low_memory_usage and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        # Process and return
+        return self._process_priors(pred_point_maps, pred_masks)
+    
+    def _process_priors(self, pred_point_maps, pred_masks):
+        """Process raw priors into final format."""
+        # Post-processing
         pred_masks = pred_masks.float() * 2 - 1
         
         # T,H,W,3 T,H,W
@@ -263,8 +295,9 @@ class GeometryCrafterDiffPipeline(StableVideoDiffusionPipeline):
         force_projection: bool = True,
         force_fixed_focal: bool = True,
         use_extract_interp: bool = False,
-        track_time: bool = False,
-        low_memory_usage: bool = False
+        track_time: bool = True,
+        low_memory_usage: bool = False,
+        cache_dir: Optional[str] = None
     ):
         
         # video: in shape [t, h, w, c] if np.ndarray or [t, c, h, w] if torch.Tensor, in range [0, 1]
@@ -314,7 +347,8 @@ class GeometryCrafterDiffPipeline(StableVideoDiffusionPipeline):
             prior_model, 
             video.to(torch.float32) if low_memory_usage else video.to(device=device, dtype=torch.float32),
             chunk_size=decode_chunk_size,
-            low_memory_usage=low_memory_usage
+            low_memory_usage=low_memory_usage,
+            cache_dir=cache_dir
         ) # T,H,W T,H,W T,3,H,W T,2,H,W
 
         if need_resize:

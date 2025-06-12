@@ -101,6 +101,7 @@ python -m src.precompute.precompute /path/to/scene --no-visualize
 #   config/precompute_test.yaml      # Quick testing configuration
 #   config/precompute_sift.yaml      # SIFT feature detection + preprocessing
 #   config/precompute_superpoint.yaml # SuperPoint features (falls back to SIFT)
+#   config/precompute_geometrycrafter.yaml # GeometryCrafter depth estimation (GPU intensive)
 
 # Visualize COLMAP reconstruction results (as PNG)
 python src/visualization/visualize_colmap.py /path/to/sparse/0 --output outputs/visualizations/colmap_viz.png
@@ -188,7 +189,11 @@ Extracts all necessary features before reconstruction:
   - Configurable window size and interval
   - Multiple initialization methods: grid, SIFT, SuperPoint
   - Automatic visualization with MP4 video output
-- **GeometryCrafter**: Monocular depth estimation (future)
+- **GeometryCrafter**: Monocular depth estimation (implemented)
+  - Automatic segment-based processing for large videos
+  - Configurable segment size (default 1000 frames)
+  - Unified output directory structure
+  - GPU memory aware processing
 - **RAFT**: Optical flow between consecutive frames (future)
 
 Output structure after precompute:
@@ -201,6 +206,13 @@ Scene/
 │       ├── tracking_result.mp4 # Video with tracked points
 │       ├── tracking_summary.png # Statistics and timeline
 │       └── frame_*.png         # Sample frames (optional)
+├── depth/
+│   ├── GeometryCrafter/        # Depth maps (one per image)
+│   │   ├── 001.npy
+│   │   ├── 002.npy
+│   │   └── ...
+│   ├── depth_metadata.json     # Consolidated metadata
+│   └── depth_metadata_segment_*.json # Per-segment metadata
 ├── precompute.log              # Execution log
 └── precompute_summary.json     # Pipeline results summary
 ```
@@ -235,4 +247,9 @@ Uses precomputed features for 3D reconstruction:
 - **CoTracker Integration**: ✅ Completed with interval-based windowing and multiple feature methods
 - **Preprocessing System**: ✅ Completed with automatic intrinsic adjustment (2025-01-12)
 - **Serialization Fix**: ✅ Resolved cv2.KeyPoint pickle issue, simplified output format (2025-01-13)
+- **GeometryCrafter Segmentation**: ✅ Implemented automatic segment-based processing for large videos (2025-01-21)
+  - Automatic video splitting with `segment_size` parameter
+  - Unified output directory structure
+  - Removed unnecessary cache code from produce_priors
 - **See**: `docs/todo_refactoring.md` for detailed refactoring plan and progress
+- **See**: `docs/todo_depth.md` for GeometryCrafter depth integration details

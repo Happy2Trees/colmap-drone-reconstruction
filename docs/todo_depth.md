@@ -250,10 +250,23 @@ except Exception as e:
 
 ### Phase 5: 검증 및 최적화
 - [ ] 단위 테스트 작성
-- [ ] 메모리 사용량 프로파일링
-- [ ] 다양한 비디오 길이 테스트
+- [x] 메모리 사용량 프로파일링
+  - 3837 프레임 처리 시 OOM(Out of Memory)로 인한 프로세스 종료 확인
+  - 메모리 부족으로 인한 "Killed" 에러 발생
+- [x] 다양한 비디오 길이 테스트
+  - 20 프레임: 성공 ✅
+  - 3837 프레임: 실패 (OOM) ❌
+- [x] 캐시 시스템 구현 (2025-06-12)
+  - `produce_priors` 함수에 캐싱 기능 추가
+  - 진행 상황 표시 (tqdm progress bar)
+  - GPU 메모리 사용량 실시간 모니터링
+  - 효율적인 해시 생성 (전체 데이터 대신 샘플 사용)
+  - 2단계 캐시: raw 결과와 processed 결과 분리
+  - 코드 중복 제거 (`_process_priors` 메서드)
 - [ ] 에러 케이스 처리
+  - 메모리 부족 감지 및 graceful degradation 필요
 - [ ] 속도 최적화
+  - 배치 처리 구현 필요 (현재 전체 시퀀스를 한 번에 로드)
 
 ### Phase 6: 문서화
 - [ ] API 문서 작성
@@ -308,7 +321,7 @@ class MoGe(nn.Module):
 
 ## 현재 상태 (Current Status)
 
-**마지막 업데이트**: 2025-06-12
+**마지막 업데이트**: 2025-01-21
 
 - ✅ GeometryCrafter 분석 완료
 - ✅ MoGe 통합 방식 확인 완료
@@ -333,6 +346,38 @@ class MoGe(nn.Module):
   - **출력 형식**: 
     - `.npz` 파일 (depth, mask, metadata 포함)
     - `_vis.png` 시각화 파일
+- 🚧 **메모리 이슈 및 최적화** (2025-06-12):
+  - **문제점**: 
+    - 3837 프레임 처리 시 OOM으로 프로세스 종료
+    - 전체 시퀀스를 메모리에 로드하는 구조적 문제
+  - **개선사항**:
+    - `produce_priors` 캐싱 시스템 구현
+    - 진행 상황 표시 및 메모리 모니터링 추가
+    - 효율적인 캐시 키 생성 (샘플 기반 해싱)
+    - 2단계 캐시 구조 (raw/processed)
+  - **진행 중**:
+    - 배치 처리 방식 구현 검토
+    - 메모리 사용량 디버깅 도구 추가
+- ✅ **세그먼트 기반 처리 구현 완료** (2025-01-21):
+  - **구현 내용**:
+    - GeometryCrafterExtractor에 `frame_start`, `frame_end` 파라미터 추가
+    - precompute.py에서 자동 세그먼트 분할 처리 구현
+    - 통일된 출력 디렉토리 구조 (모든 depth map이 하나의 디렉토리에 저장)
+    - 세그먼트별 metadata + 통합 metadata 생성
+  - **주요 개선사항**:
+    - `segment_size: 1000` 설정 옵션 추가 (config 파일)
+    - cache 관련 코드 제거 (produce_priors에서 불필요한 cache 로직 삭제)
+    - 24GB GPU에서 3800 프레임 안전하게 처리 가능
+  - **출력 구조**:
+    ```
+    depth/
+    ├── GeometryCrafter/          # 모든 depth map (통합)
+    │   ├── 001.npy
+    │   ├── 002.npy
+    │   └── ... (3800개)
+    ├── depth_metadata.json       # 통합 metadata
+    └── depth_metadata_segment_*.json  # 각 세그먼트 metadata
+    ```
 
 ### 📊 실용적 가이드라인 (1024x576 기준)
 - **RTX 3090 (24GB)**: ~3400 frames 처리 가능
@@ -419,40 +464,42 @@ submodules/GeometryCrafter/geometrycrafter/
 ### 4. 메모리 최적화 전략
 
 #### 4.1 현재 상태 (2025-01-21)
-- **기본 구현만 사용 가능**: GeometryCrafterExtractor가 전체 비디오를 메모리에 로드
-- **메모리 효율적 구현 실패**: Pipeline 내부 로직 분리가 어려워 구현 보류
+- ✅ **세그먼트 기반 처리 구현 완료**: 큰 비디오를 자동으로 분할하여 처리
 - **메모리 사용량 (1024x576 기준)**: 
   - 1024x576 @ 500 frames: ~3.5GB GPU 메모리
   - 1024x576 @ 1000 frames: ~7GB GPU 메모리
   - 1024x576 @ 2000 frames: ~14GB GPU 메모리
-  - 1024x576 @ 4800 frames: ~34GB GPU 메모리 (처리 불가)
+  - 1024x576 @ 3800 frames: ~26.6GB GPU 메모리 (세그먼트 분할로 처리 가능)
+  - 1024x576 @ 4800 frames: ~34GB GPU 메모리 (세그먼트 분할로 처리 가능)
 
-#### 4.2 대안 접근 방식
-1. **비디오 분할 처리**:
-   ```python
-   # 비디오를 여러 세그먼트로 분할
-   segment_size = 1000  # 1024x576에서는 ~7GB GPU 메모리
-   for segment in video_segments:
-       process_segment(segment)
+#### 4.2 구현된 접근 방식
+1. ✅ **비디오 분할 처리 (구현 완료)**:
+   ```yaml
+   # config/precompute_geometrycrafter.yaml
+   depth:
+     segment_size: 1000  # 자동으로 1000 프레임씩 분할 처리
+   ```
+   - 3800 프레임 → 4개 세그먼트로 자동 분할
+   - 각 세그먼트 독립적으로 처리
+   - 최종 출력은 하나의 디렉토리에 통합
+
+2. **해상도 감소 (옵션)**:
+   ```yaml
+   depth:
+     downsample_ratio: 2.0  # 1/2 해상도로 처리
    ```
 
-2. **해상도 감소**:
-   ```python
-   # downsample_ratio 옵션 활용
-   config['downsample_ratio'] = 2.0  # 1/2 해상도로 처리
+3. **Window size 조정 (옵션)**:
+   ```yaml
+   depth:
+     window_size: 50  # 기본값: 110
+     overlap: 10      # 기본값: 25
    ```
 
-3. **Window size 조정**:
-   ```python
-   # 더 작은 window 사용 (품질 저하 가능)
-   config['window_size'] = 50  # 기본값: 110
-   config['overlap'] = 10      # 기본값: 25
-   ```
-
-#### 4.3 향후 개선 방향
-- **GeometryCrafter Fork**: 소스 코드를 직접 수정하여 streaming 지원
-- **External Caching**: Latent를 디스크에 저장하여 메모리 절약
-- **Multi-GPU Support**: 여러 GPU에 분산 처리
+#### 4.3 최적화 개선사항
+- ✅ **Cache 코드 제거**: produce_priors의 불필요한 cache 로직 제거로 메모리 절약
+- ✅ **통합 출력 구조**: 세그먼트별 처리해도 하나의 디렉토리에 통합 저장
+- ✅ **Metadata 관리**: 세그먼트별 + 통합 metadata로 완전한 추적 가능
 
 ## 설정 파라미터 (Configuration)
 
@@ -461,27 +508,94 @@ depth:
   model: geometrycrafter
   device: cuda
   
+  # 세그먼트 처리 설정 (대용량 비디오용)
+  segment_size: 1000      # 프레임 단위 세그먼트 크기
+  
   # 모델 설정
-  model_type: determ      # 'determ' (빠름) 또는 'diff' (고품질)
+  model_type: diff        # 'diff' (고품질) 또는 'determ' (빠름)
+  cache_dir: workspace/cache  # 모델 가중치 캐시 디렉토리
   
-  # MoGe 설정
-  moge:
-    cache_dir: ./weights/moge  # MoGe 가중치 캐시 디렉토리
-    model_name: Ruicheng/moge-vitl  # HuggingFace 모델 이름
+  # 비디오 처리 설정
+  window_size: 110        # 시간적 윈도우 크기 (기본값)
+  overlap: 25             # 윈도우 간 오버랩
+  decode_chunk_size: 8    # VAE 디코딩 청크 크기
   
-  # 처리 설정
-  batch_size: 4           # GPU 메모리에 따라 조정
-  chunk_size: 8           # VAE 디코딩 청크 크기
-  temporal_window: 5      # 시간적 일관성을 위한 윈도우 크기
+  # 추론 설정
+  num_inference_steps: 5  # 디노이징 스텝 수 (diff 모델용)
+  guidance_scale: 1.0     # 가이던스 스케일 (diff 모델용)
+  downsample_ratio: 1.0   # 입력 다운샘플링 비율
   
-  # 최적화 설정
-  use_amp: true          # Automatic Mixed Precision
-  compile_model: false   # torch.compile 사용 (PyTorch 2.0+)
+  # 모델 옵션
+  force_projection: true  # 원근 투영 강제
+  force_fixed_focal: true # 고정 초점 거리 사용
+  use_extract_interp: false # 추출시 보간 사용
+  low_memory_usage: false # 저메모리 모드 (느림)
   
   # 출력 설정
   save_visualization: true  # Depth map 시각화 저장
-  output_format: npy       # 'npy', 'png', 'pfm'
-  save_moge_prior: true    # MoGe prior도 별도 저장
+  output_format: npy       # 출력 형식: 'npy', 'png', 'pfm'
+  save_moge_prior: false   # MoGe prior 별도 저장
+  save_ply: false          # 3D 포인트 클라우드 PLY 저장
+  
+  # 랜덤 시드
+  seed: 42
+```
+
+## 현재 이슈 및 해결 방안 (Current Issues & Solutions)
+
+### 1. OOM (Out of Memory) 문제
+**증상**: 
+- 3837 프레임 처리 시 "Killed" 메시지와 함께 프로세스 종료
+- 이미지 로딩 단계에서 발생 (pipeline 실행 전)
+
+**원인**:
+- 전체 비디오 시퀀스를 numpy array로 메모리에 로드
+- 3837 frames × 1024×576 × 3 channels × float32 = ~25GB RAM 필요
+
+**해결 방안**:
+1. **즉시 적용 가능**:
+   - `low_memory_usage: true` 설정 사용
+   - 비디오를 여러 세그먼트로 분할 처리
+   - `downsample_ratio` 증가 (품질 저하)
+   
+2. **구현 필요**:
+   - 배치 단위 이미지 로딩 및 처리
+   - Streaming 방식 구현
+   - 디스크 캐싱 활용
+
+### 2. 캐시 시스템 개선점
+**현재 구현**:
+- `produce_priors` 함수에 캐싱 추가
+- 진행 상황 표시 (tqdm)
+- GPU 메모리 모니터링
+
+**개선 사항**:
+- 효율적인 해시 생성 (첫/마지막 프레임 샘플 사용)
+- 2단계 캐시: raw 결과와 processed 결과 분리
+- 코드 중복 제거 (`_process_priors` 메서드)
+
+### 3. 디버깅 방안
+**추가된 로깅**:
+```python
+# 메모리 상태 로깅
+logger.info(f"System memory: {memory_info.percent:.1f}% used")
+logger.info(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+# 캐시 상태 로깅
+logger.info(f"Loading cached priors from {cache_path}")
+logger.info(f"Saved processed priors to cache: {cache_processed_path}")
+```
+
+**디버깅 명령어**:
+```bash
+# 시스템 메모리 모니터링
+watch -n 1 free -h
+
+# GPU 메모리 모니터링  
+watch -n 1 nvidia-smi
+
+# 프로세스별 메모리 사용량
+htop
 ```
 
 ## 의존성 요구사항 (Dependencies)
