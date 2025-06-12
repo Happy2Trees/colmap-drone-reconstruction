@@ -9,7 +9,7 @@ import json
 import sys
 
 from .trackers.cotracker_extractor import CoTrackerExtractor
-from ..preprocessing import preprocess_scene
+from ..preprocessing import preprocess_scene, slice_fps_core
 
 # Conditional imports for optional modules
 try:
@@ -93,6 +93,35 @@ class PrecomputePipeline:
             logging.debug(f"Error reading preprocessing info: {e}")
             return False
     
+    def _copy_camera_params(self, source_dir: Path, target_dir: Path):
+        """Copy camera parameter files (K.txt, dist.txt) from source to target"""
+        for param_file in ['K.txt', 'dist.txt']:
+            source_file = source_dir / param_file
+            if source_file.exists():
+                import shutil
+                shutil.copy2(source_file, target_dir / param_file)
+                logging.debug(f"Copied {param_file} to {target_dir}")
+    
+    def _determine_final_output_dir(self, scene_dir: Path, preprocess_config: dict) -> Path:
+        """Determine the final output directory name based on all preprocessing steps"""
+        output_name = scene_dir.name
+        
+        # Add frame sampling suffix if enabled
+        fs_config = preprocess_config.get('frame_sampling', {})
+        if fs_config.get('enabled', False):
+            if 'interval' in fs_config:
+                output_name += f"_interval{fs_config['interval']}"
+            else:
+                output_name += f"_fps{fs_config['target_fps']}"
+        
+        # Add resolution suffix if enabled
+        target_width = preprocess_config.get('target_width')
+        target_height = preprocess_config.get('target_height')
+        if target_width and target_height:
+            output_name += f"_processed_{target_width}x{target_height}"
+        
+        return scene_dir.parent / output_name
+
     def _preprocess_if_needed(self, scene_dir: Path) -> Path:
         """Preprocess scene if enabled in config"""
         preprocess_config = self.config.get('preprocessing', {})
@@ -101,39 +130,125 @@ class PrecomputePipeline:
             logging.info("Preprocessing disabled, using original scene")
             return scene_dir
         
-        # Check if preprocessing is needed
-        target_width = preprocess_config.get('target_width', 1920)
-        target_height = preprocess_config.get('target_height', 1080)
+        # Determine final output directory based on all preprocessing steps
+        final_output_dir = self._determine_final_output_dir(scene_dir, preprocess_config)
         force_overwrite = preprocess_config.get('force_overwrite', False)
         
-        # Create preprocessed directory name
-        preprocessed_dir = scene_dir.parent / f"{scene_dir.name}_processed_{target_width}x{target_height}"
+        # Check if final output already exists and is valid
+        if final_output_dir.exists() and not force_overwrite:
+            # Check if preprocessing info matches
+            fs_config = preprocess_config.get('frame_sampling', {})
+            target_width = preprocess_config.get('target_width')
+            target_height = preprocess_config.get('target_height')
+            
+            # For now, just check if images directory exists
+            images_dir = final_output_dir / 'images'
+            if images_dir.exists() and list(images_dir.glob('*.jpg')):
+                # If resolution preprocessing is enabled, verify it
+                if target_width and target_height:
+                    if self._is_preprocessing_valid(final_output_dir, target_width, target_height):
+                        logging.info(f"Using existing preprocessed scene: {final_output_dir}")
+                        return final_output_dir
+                else:
+                    # Just frame sampling, check if it exists
+                    logging.info(f"Using existing preprocessed scene: {final_output_dir}")
+                    return final_output_dir
+            
+            # Invalid, remove and re-process
+            logging.warning(f"Existing preprocessed directory invalid, will re-process")
+            import shutil
+            shutil.rmtree(final_output_dir)
         
-        # Check if already preprocessed and valid
-        if preprocessed_dir.exists() and not force_overwrite:
-            if self._is_preprocessing_valid(preprocessed_dir, target_width, target_height):
-                logging.info(f"Using existing valid preprocessed scene: {preprocessed_dir}")
-                return preprocessed_dir
+        # Apply preprocessing steps directly to final output directory
+        logging.info(f"Preprocessing scene to: {final_output_dir}")
+        
+        # Step 1: Frame sampling (if enabled)
+        fs_config = preprocess_config.get('frame_sampling', {})
+        if fs_config.get('enabled', False):
+            logging.info(f"Applying frame sampling: fps={fs_config.get('target_fps')}, interval={fs_config.get('interval')}")
+            
+            # If also doing resize, we need a temporary location for frame sampling
+            target_width = preprocess_config.get('target_width')
+            target_height = preprocess_config.get('target_height')
+            
+            if target_width and target_height:
+                # Use temporary directory for frame sampling
+                import tempfile
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir) / "sampled"
+                    
+                    # Apply frame sampling to temp directory
+                    result = slice_fps_core(
+                        scene_dir / "images",
+                        temp_path / "images",
+                        target_fps=fs_config.get('target_fps'),
+                        source_fps=fs_config.get('source_fps'),
+                        interval=fs_config.get('interval')
+                    )
+                    
+                    if result < 0:
+                        raise RuntimeError("Frame sampling failed")
+                    
+                    # Copy camera parameters to temp directory
+                    self._copy_camera_params(scene_dir, temp_path)
+                    
+                    # Apply resize and crop from temp to final
+                    logging.info(f"Applying resize and crop to {target_width}x{target_height}...")
+                    output_dir = preprocess_scene(
+                        scene_dir=temp_path,
+                        output_dir=final_output_dir,
+                        target_size=(target_width, target_height),
+                        force=True
+                    )
+                    
+                    # Save combined preprocessing info
+                    info = {
+                        'source_dir': str(scene_dir),
+                        'frame_sampling': fs_config,
+                        'num_frames_sampled': result,
+                        'target_size': {'width': target_width, 'height': target_height}
+                    }
+                    with open(final_output_dir / 'preprocessing_info.yaml', 'w') as f:
+                        yaml.dump(info, f)
             else:
-                logging.warning(f"Existing preprocessed directory invalid, will re-process")
-                import shutil
-                shutil.rmtree(preprocessed_dir)
+                # Only frame sampling, apply directly to final directory
+                result = slice_fps_core(
+                    scene_dir / "images",
+                    final_output_dir / "images",
+                    target_fps=fs_config.get('target_fps'),
+                    source_fps=fs_config.get('source_fps'),
+                    interval=fs_config.get('interval')
+                )
+                
+                if result < 0:
+                    raise RuntimeError("Frame sampling failed")
+                
+                # Copy camera parameters
+                self._copy_camera_params(scene_dir, final_output_dir)
+                
+                # Save frame sampling info
+                info = {
+                    'source_dir': str(scene_dir),
+                    'frame_sampling': fs_config,
+                    'num_frames_sampled': result
+                }
+                with open(final_output_dir / 'frame_sampling_info.yaml', 'w') as f:
+                    yaml.dump(info, f)
         
-        # Run preprocessing
-        logging.info(f"Preprocessing scene to {target_width}x{target_height}...")
+        # Step 2: Only resize and crop (no frame sampling)
+        elif target_width := preprocess_config.get('target_width'):
+            target_height = preprocess_config.get('target_height')
+            if target_height:
+                logging.info(f"Applying resize and crop to {target_width}x{target_height}...")
+                output_dir = preprocess_scene(
+                    scene_dir=scene_dir,
+                    output_dir=final_output_dir,
+                    target_size=(target_width, target_height),
+                    force=force_overwrite
+                )
         
-        try:
-            output_dir = preprocess_scene(
-                scene_dir=scene_dir,
-                output_dir=preprocessed_dir,
-                target_size=(target_width, target_height),
-                force=force_overwrite
-            )
-            logging.info("Preprocessing completed successfully")
-            return output_dir
-        except Exception as e:
-            logging.error(f"Preprocessing failed: {e}")
-            raise RuntimeError(f"Preprocessing failed: {e}")
+        logging.info("Preprocessing completed successfully")
+        return final_output_dir
     
     def run(self, scene_dir: str):
         """Run all configured extractors on the scene"""

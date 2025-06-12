@@ -717,6 +717,141 @@ def test_two_stage_pipeline():
 - 시간적 일관성 검증
 - COLMAP reconstruction 개선도 측정
 
+## 프레임 샘플링 전처리 통합 계획 (Frame Sampling Integration Plan)
+
+**추가일**: 2025-01-21
+
+### 현재 상황
+- **문제점**: 이미지 개수가 너무 많아서 (예: 3800+ 프레임) 처리 시간이 오래 걸림
+- **기존 상태**: 
+  - `slice_fps.py` 모듈이 이미 존재하지만 precompute 파이프라인에 통합되지 않음
+  - 사용자가 수동으로 실행해야 함 (`python src/preprocessing/slice_fps.py`)
+  - Resolution preprocessing (`resize_and_crop.py`)만 precompute에 통합됨
+
+### 통합 목표
+Frame sampling을 precompute 파이프라인에 통합하여 자동화된 전처리 체인 구성:
+1. **Frame Sampling** (첫 번째 단계) → 프레임 수 감소
+2. **Resize & Crop** (두 번째 단계) → 해상도 조정
+3. **Feature Extraction** (precompute) → 전처리된 데이터로 작업
+
+### 구현 계획
+
+#### 1. Config 구조 확장
+```yaml
+# config/precompute.yaml 수정
+preprocessing:
+  enabled: true
+  
+  # Frame sampling settings (NEW)
+  frame_sampling:
+    enabled: true
+    target_fps: 10      # 목표 FPS (기본값: 10)
+    source_fps: 60      # 원본 FPS (기본값: 60)
+    # 또는 간격 기반 샘플링
+    interval: 6         # 6프레임마다 1개 선택 (fps 대신 사용 가능)
+  
+  # Resolution settings (existing)
+  target_width: 1920
+  target_height: 1080
+  force_overwrite: false
+```
+
+#### 2. 디렉토리 명명 규칙
+```
+원본: /data/scene_001/images/
+↓ Frame sampling
+중간: /data/scene_001_fps10/images/    # 또는 _interval6
+↓ Resize & crop  
+최종: /data/scene_001_fps10_processed_1920x1080/images/
+```
+
+#### 3. Precompute.py 수정 사항
+```python
+def apply_preprocessing(self, scene_path: Path) -> Path:
+    """Apply preprocessing chain"""
+    current_path = scene_path
+    
+    # Step 1: Frame sampling (if enabled)
+    if self.config['preprocessing'].get('frame_sampling', {}).get('enabled', False):
+        current_path = self.apply_frame_sampling(current_path)
+    
+    # Step 2: Resize and crop (if enabled)
+    if self.config['preprocessing'].get('target_width'):
+        current_path = self.apply_resize_and_crop(current_path)
+    
+    return current_path
+
+def apply_frame_sampling(self, scene_path: Path) -> Path:
+    """Apply frame sampling preprocessing"""
+    fs_config = self.config['preprocessing']['frame_sampling']
+    
+    # Determine output directory name
+    if 'interval' in fs_config:
+        suffix = f"_interval{fs_config['interval']}"
+    else:
+        suffix = f"_fps{fs_config['target_fps']}"
+    
+    output_path = scene_path.parent / f"{scene_path.name}{suffix}"
+    
+    # Skip if already processed
+    if output_path.exists() and not self.config['preprocessing'].get('force_overwrite', False):
+        logger.info(f"Frame sampling already done: {output_path}")
+        return output_path
+    
+    # Apply frame sampling
+    from src.preprocessing.slice_fps import slice_fps
+    slice_fps(
+        scene_path / "images",
+        output_path / "images",
+        target_fps=fs_config.get('target_fps'),
+        source_fps=fs_config.get('source_fps'),
+        interval=fs_config.get('interval')
+    )
+    
+    # Copy camera parameters
+    self._copy_camera_params(scene_path, output_path)
+    
+    return output_path
+```
+
+#### 4. slice_fps.py 리팩토링
+현재 CLI 기반 모듈을 함수 기반으로 리팩토링:
+```python
+def slice_fps(input_dir: Path, output_dir: Path, 
+              target_fps: Optional[int] = None,
+              source_fps: Optional[int] = None,
+              interval: Optional[int] = None) -> int:
+    """
+    Frame sampling function
+    Returns: number of frames sampled
+    """
+    # 기존 로직을 함수로 변환
+    # interval 옵션 추가 (fps 대신 사용 가능)
+```
+
+### 구현 우선순위
+1. **Phase 1**: slice_fps.py를 함수 기반으로 리팩토링
+2. **Phase 2**: Config 스키마 업데이트 및 validation 추가
+3. **Phase 3**: precompute.py에 frame sampling 통합
+4. **Phase 4**: 테스트 및 문서 업데이트
+
+### 예상 효과
+- **처리 시간 단축**: 3800 프레임 → 380 프레임 (10fps 기준) = 10배 속도 향상
+- **메모리 사용량 감소**: 프레임 수 감소로 GPU 메모리 부담 완화
+- **자동화**: 수동 전처리 단계 제거로 사용자 편의성 향상
+
+### 사용 예시
+```bash
+# 전체 전처리 체인 실행 (frame sampling + resize)
+python -m src.precompute.precompute /data/scene_001 --config config/precompute_with_sampling.yaml
+
+# 결과: 
+# - 원본: 3800 frames @ 4K
+# - Frame sampling: 380 frames @ 4K  
+# - Resize: 380 frames @ 1920x1080
+# - 최종 처리 대상: 380 frames (10배 감소)
+```
+
 ## 참고 자료
 
 - [GeometryCrafter GitHub](https://github.com/VAST-AI-Research/GeometryCrafter)

@@ -2,10 +2,104 @@ import os
 import shutil
 import argparse
 import math
+from pathlib import Path
+from typing import Optional, Union
 from natsort import natsorted # Use natsorted for natural sorting of filenames
+
+def slice_fps_core(source_dir: Union[str, Path], 
+                   output_dir: Union[str, Path],
+                   target_fps: Optional[int] = None, 
+                   source_fps: Optional[int] = None,
+                   interval: Optional[int] = None) -> int:
+    """
+    Samples images from source_dir and copies them to output_dir.
+    
+    Args:
+        source_dir: The directory containing the original images.
+        output_dir: The directory where sampled images will be copied.
+        target_fps: The desired frames per second for sampling.
+        source_fps: The frames per second of the source images.
+        interval: Direct interval sampling (e.g., 6 = every 6th frame).
+                 If provided, overrides fps-based calculation.
+    
+    Returns:
+        Number of frames sampled, or -1 on error.
+    """
+    source_dir = Path(source_dir)
+    output_dir = Path(output_dir)
+    
+    if not source_dir.is_dir():
+        print(f"오류: 소스 디렉토리 '{source_dir}'를 찾을 수 없습니다.")
+        return -1
+    
+    # Calculate sampling interval
+    if interval is not None:
+        # Direct interval mode
+        if interval <= 0:
+            print("오류: interval은 0보다 커야 합니다.")
+            return -1
+        sampling_interval = float(interval)
+    else:
+        # FPS-based mode
+        if target_fps is None or source_fps is None:
+            print("오류: interval이 제공되지 않은 경우 target_fps와 source_fps가 필요합니다.")
+            return -1
+        if target_fps <= 0 or source_fps <= 0:
+            print("오류: fps 값은 0보다 커야 합니다.")
+            return -1
+        if target_fps > source_fps:
+            print("오류: target_fps가 source_fps보다 클 수 없습니다.")
+            return -1
+        sampling_interval = source_fps / target_fps
+    
+    # Create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # List and sort image files
+    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
+    try:
+        all_files = [f for f in source_dir.iterdir()
+                     if f.is_file() and f.suffix.lower() in image_extensions]
+        # Use natsorted for correct numerical sorting
+        image_files = natsorted(all_files, key=lambda x: x.name)
+    except OSError as e:
+        print(f"오류: '{source_dir}' 디렉토리의 파일 목록을 가져오는 중 오류 발생: {e}")
+        return -1
+    
+    if not image_files:
+        print(f"경고: '{source_dir}' 디렉토리에서 이미지 파일을 찾을 수 없습니다.")
+        return 0
+    
+    # Sample and copy files
+    copied_count = 0
+    last_selected_index = -float('inf')
+    
+    for i, filepath in enumerate(image_files):
+        # Select frame based on interval
+        target_index = round(copied_count * sampling_interval)
+        
+        if i >= target_index and i > last_selected_index:
+            # Construct paths
+            target_path = output_dir / filepath.name
+            
+            # Copy the file
+            try:
+                shutil.copy2(str(filepath), str(target_path))
+                copied_count += 1
+                last_selected_index = i
+            except Exception as e:
+                print(f"오류: '{filepath.name}' 파일을 복사하는 중 오류 발생: {e}")
+    
+    if interval is not None:
+        print(f"Interval {interval}: {len(image_files)}개 중 {copied_count}개 이미지 샘플링 완료")
+    else:
+        print(f"{source_fps}fps → {target_fps}fps: {len(image_files)}개 중 {copied_count}개 이미지 샘플링 완료")
+    
+    return copied_count
 
 def slice_fps(source_dir, target_fps, source_fps=60):
     """
+    Legacy function for backward compatibility.
     Samples images from source_dir at target_fps and copies them to a '_sliced' subdirectory.
 
     Args:
@@ -18,92 +112,23 @@ def slice_fps(source_dir, target_fps, source_fps=60):
         return
 
     # Create the target directory
-    # target_dir = os.path.join(source_dir, "_sliced") # 기존 방식: 하위 폴더 생성
     parent_dir = os.path.dirname(source_dir)
     base_name = os.path.basename(source_dir)
-    target_dir = os.path.join(parent_dir, base_name + "_sliced") # 수정된 방식: 형제 폴더 생성
-    os.makedirs(target_dir, exist_ok=True)
-    print(f"'{target_dir}' 디렉토리를 생성했거나 이미 존재합니다.")
-
-    # Calculate the sampling interval
-    if target_fps <= 0:
-        print("오류: target_fps는 0보다 커야 합니다.")
-        return
-    if source_fps <= 0:
-        print("오류: source_fps는 0보다 커야 합니다.")
-        return
-
-    interval = source_fps / target_fps
-    if interval < 1:
-        print("오류: target_fps가 source_fps보다 클 수 없습니다.")
-        return
-
-    print(f"소스 FPS: {source_fps}, 타겟 FPS: {target_fps}, 샘플링 간격: {interval:.2f} (매 {int(round(interval))}번째 프레임 선택)")
-
-    # List and sort image files (assuming common image extensions)
-    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
-    try:
-        all_files = [f for f in os.listdir(source_dir)
-                     if os.path.isfile(os.path.join(source_dir, f)) and f.lower().endswith(image_extensions)]
-        # Use natsorted for correct numerical sorting (e.g., 1, 2, ..., 10, 11, ...)
-        image_files = natsorted(all_files)
-    except OSError as e:
-        print(f"오류: '{source_dir}' 디렉토리의 파일 목록을 가져오는 중 오류 발생: {e}")
-        return
-
-
-    if not image_files:
-        print(f"경고: '{source_dir}' 디렉토리에서 이미지 파일을 찾을 수 없습니다.")
-        return
-
-    # Sample and copy files
-    copied_count = 0
-    last_selected_index = -float('inf') # Keep track of the last *actual* index selected
-
-    for i, filename in enumerate(image_files):
-        # Calculate the ideal index based on the interval
-        current_ideal_frame_num = i + 1 # Frame numbers are 1-based
-        target_frame_num_float = current_ideal_frame_num / interval
-
-        # Select the frame if its index is the closest integer to the ideal target frame number
-        # and it hasn't been selected yet due to rounding of previous selections.
-        # More robustly: select frame 'i' if floor(i / interval) > floor((i-1) / interval)
-        # Or simply select the frame corresponding to the desired time step.
-
-        select_this_frame = False
-        # We want to select the frame closest to the time instances t = k / target_fps
-        # The current frame time is i / source_fps
-        # The target time instances are 0, 1/target_fps, 2/target_fps, ...
-        # We select frame i if its time is the closest to *some* target time instance k/target_fps
-        # compared to other frames.
-        # A simpler way: select frame i if floor(i * target_fps / source_fps) > floor((i-1) * target_fps / source_fps)
-
-        # Let's use the simpler approach: select every 'interval'-th frame using floating point comparison
-        # Select frame 0, frame 'interval', frame '2*interval', etc.
-        target_index = round(copied_count * interval)
-
-        if i >= target_index and i > last_selected_index:
-             # Construct full paths
-            source_path = os.path.join(source_dir, filename)
-            target_path = os.path.join(target_dir, filename)
-
-            # Copy the file
-            try:
-                shutil.copy2(source_path, target_path) # copy2 preserves metadata
-                # print(f"Copied: {filename} (Index: {i})")
-                copied_count += 1
-                last_selected_index = i
-            except Exception as e:
-                print(f"오류: '{filename}' 파일을 복사하는 중 오류 발생: {e}")
-
-
-    print(f"\n총 {len(image_files)}개의 이미지 파일 중 {copied_count}개를 '{target_dir}'로 복사했습니다.")
+    target_dir = os.path.join(parent_dir, base_name + "_sliced")
+    
+    # Use the new core function
+    result = slice_fps_core(source_dir, target_dir, target_fps=target_fps, source_fps=source_fps)
+    
+    if result > 0:
+        print(f"'{target_dir}' 디렉토리에 {result}개의 이미지를 복사했습니다.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sample images from a directory at a target FPS")
+    parser = argparse.ArgumentParser(description="Sample images from a directory at a target FPS or interval")
     parser.add_argument("source_directory", help="Source directory containing images")
-    parser.add_argument("--target_fps", type=int, default=6, help="Target frames per second (default: 6)")
+    parser.add_argument("--target_fps", type=int, help="Target frames per second")
     parser.add_argument("--source_fps", type=int, default=60, help="Source frames per second (default: 60)")
+    parser.add_argument("--interval", type=int, help="Sample every N-th frame (overrides fps settings)")
+    parser.add_argument("--output_dir", type=str, help="Output directory (default: source_sliced)")
     
     args = parser.parse_args()
     
@@ -113,7 +138,32 @@ if __name__ == "__main__":
     except ImportError:
         print("오류: 'natsort' 라이브러리가 필요합니다. 설치해주세요.")
         print("pip install natsort")
-        exit(1) # Use exit(1) for errors
-
-    # 함수 호출
-    slice_fps(args.source_directory, args.target_fps, args.source_fps)
+        exit(1)
+    
+    # Validate arguments
+    if args.interval is None and args.target_fps is None:
+        parser.error("Either --interval or --target_fps must be specified")
+    
+    # Determine output directory
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        # Legacy behavior
+        parent_dir = os.path.dirname(args.source_directory)
+        base_name = os.path.basename(args.source_directory)
+        if args.interval:
+            output_dir = os.path.join(parent_dir, f"{base_name}_interval{args.interval}")
+        else:
+            output_dir = os.path.join(parent_dir, f"{base_name}_sliced")
+    
+    # Call the core function
+    result = slice_fps_core(
+        args.source_directory, 
+        output_dir,
+        target_fps=args.target_fps,
+        source_fps=args.source_fps,
+        interval=args.interval
+    )
+    
+    if result < 0:
+        exit(1)

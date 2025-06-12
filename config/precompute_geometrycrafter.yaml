@@ -2,15 +2,15 @@
 
 # Features to extract
 features:
-  # - cotracker  # Already extracted
+  - cotracker  # Already extracted
   - depth
   # - flow
 
 # CoTracker settings (kept for reference but not used)
 cotracker:
-  window_size: 48
+  window_size: 50
   interval: 10
-  initialization_method: grid  # Options: grid, sift, superpoint
+  initialization_method: sift  # Options: grid, sift, superpoint
   grid_size: 20
   device: cuda
 
@@ -20,7 +20,7 @@ depth:
   device: cuda
   
   # Segmentation settings for large videos
-  segment_size: 100      # Process frames in segments (for memory efficiency) - reduced from 500
+  segment_size: 1000      # Process frames in segments (for memory efficiency) - reduced from 500
   
   # Model settings (matching submodule defaults)
   model_type: diff        # 'diff' (default, higher quality) or 'determ' (faster)
@@ -40,7 +40,7 @@ depth:
   force_projection: true  # Force perspective projection
   force_fixed_focal: true # Use fixed focal length
   use_extract_interp: false # Use interpolation in extraction
-  low_memory_usage: false  # Enable low memory mode (slower) - changed to true
+  low_memory_usage: true  # Enable low memory mode (slower) - changed to true
   
   # Output settings
   save_visualization: true  # Save depth map visualizations
@@ -58,10 +58,10 @@ optical_flow:
 
 # Visualization settings
 visualization:
-  enabled: false         # Disable visualization for depth-only run
-  save_video: false      # Save MP4 video
+  enabled: true         # Disable visualization for depth-only run
+  save_video: true      # Save MP4 video
   save_frames: false     # Save sample frames
-  fps: 10               # Output video FPS
+  fps: 12               # Output video FPS
   point_size: 6         # Size of tracked points
   trail_length: 20      # Length of motion trails
 
@@ -71,6 +71,14 @@ preprocessing:
   target_width: 1024     # Target width for resized images (GeometryCrafter default)
   target_height: 576     # Target height for resized images (GeometryCrafter default)
   force_overwrite: false # Overwrite existing preprocessed data
+  
+  # Frame sampling settings (applied first)
+  frame_sampling:
+    enabled: true        # Set to false by default for existing configs
+    target_fps: 12       # Target frames per second
+    source_fps: 60       # Source frames per second (default: 60)
+    # Alternative: use interval instead of fps
+    # interval: 6        # Sample every N-th frame
 
 # General settings
 log_level: INFO
