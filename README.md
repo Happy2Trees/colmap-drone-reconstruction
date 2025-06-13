@@ -24,6 +24,12 @@ This project implements a sophisticated two-stage 3D reconstruction pipeline opt
 - Intrinsic parameter adjustment
 - Validation system to avoid redundant processing
 
+### GeometryCrafter-style Window-based Bundle Adjustment
+- **Cross-projection optimization** for global consistency
+- **Depth-aware 3D initialization** using monocular depth maps
+- **Window-based processing** without track merging
+- **COLMAP export** for compatibility with existing tools
+
 ### Additional Features
 - COLMAP and Super-COLMAP integration
 - Comprehensive visualization tools (MP4 videos, 3D models)
@@ -36,6 +42,7 @@ This project implements a sophisticated two-stage 3D reconstruction pipeline opt
 ├── src/                          # Python source code
 │   ├── precompute/              # Feature extraction pipeline
 │   ├── preprocessing/           # Image preprocessing tools
+│   ├── window_ba/               # Window-based Bundle Adjustment
 │   ├── visualization/           # 3D visualization
 │   └── colmap_utils/           # COLMAP I/O utilities
 ├── scripts/                     # Execution scripts
@@ -71,7 +78,16 @@ Scene_processed_1920x1080/       # Preprocessed scene
 ├── dist.txt                     # Same distortion
 ├── cotracker/                   # Extracted tracks
 │   └── 48_10_grid.npy          # window_interval_method.npy
-└── visualizations/              # Optional visualizations
+├── depth/                       # Depth maps (if computed)
+│   └── GeometryCrafter/        # Monocular depth estimation
+├── visualizations/              # Optional visualizations
+└── window_ba_output/            # Bundle adjustment results
+    ├── cameras_final.npz        # Optimized camera poses
+    ├── window_tracks_3d.npz     # 3D points per window
+    └── colmap/                  # COLMAP export
+        ├── cameras.bin
+        ├── images.bin
+        └── points3D.bin
 ```
 
 ## Getting Started
@@ -114,7 +130,19 @@ python -m src.precompute.precompute /path/to/scene --config config/precompute_si
 python -m src.precompute.precompute /path/to/scene --config config/precompute_dense.yaml
 ```
 
-#### 2. Run COLMAP Reconstruction
+#### 2. Window-based Bundle Adjustment (GeometryCrafter-style)
+```bash
+# Run window BA with precomputed tracks and depth
+python -m src.window_ba /path/to/scene
+
+# With two-phase optimization (camera + 3D refinement)
+python -m src.window_ba /path/to/scene --use_refine
+
+# Custom configuration
+python -m src.window_ba /path/to/scene --config config/window_ba.yaml
+```
+
+#### 3. Run COLMAP Reconstruction
 ```bash
 # Standard COLMAP
 ./scripts/run_colmap/run_colmap_3x_0.sh  # Section 1, 3x magnification
@@ -124,7 +152,7 @@ cd submodules/super-colmap
 python super_colmap.py --projpath /path/to/project --cameraModel SIMPLE_RADIAL
 ```
 
-#### 3. Preprocessing Tools
+#### 4. Preprocessing Tools
 ```bash
 # Extract frames from video
 python src/preprocessing/slice_fps.py /path/to/video --target_fps 10
@@ -133,7 +161,7 @@ python src/preprocessing/slice_fps.py /path/to/video --target_fps 10
 python -m src.preprocessing.resize_and_crop /path/to/scene --width 1920 --height 1080
 ```
 
-#### 4. Visualization
+#### 5. Visualization
 ```bash
 # Visualize COLMAP results as PNG
 python src/visualization/visualize_colmap.py /path/to/sparse/0 --output viz.png
@@ -152,6 +180,7 @@ The project uses YAML configuration files for different scenarios:
 - `config/precompute_sift.yaml` - SIFT feature detection
 - `config/precompute_superpoint.yaml` - SuperPoint features
 - `config/precompute_test.yaml` - Quick testing
+- `config/window_ba.yaml` - Window-based Bundle Adjustment settings
 
 Example configuration:
 ```yaml
@@ -176,6 +205,7 @@ visualization:
 - [COLMAP](https://colmap.github.io/) - Structure-from-Motion and Multi-View Stereo
 - [CoTracker](https://co-tracker.github.io/) - Point tracking in video
 - [SuperPoint](https://github.com/magicleap/SuperPointPretrainedNetwork) - Self-supervised interest point detection
+- [GeometryCrafter](https://github.com/GeometryCrafter/GeometryCrafter) - 3D geometry estimation from images
 
 ## 📄 License
 
