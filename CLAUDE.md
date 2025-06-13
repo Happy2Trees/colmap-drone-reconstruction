@@ -25,6 +25,18 @@ python -m src.precompute.precompute /path/to/scene --config config/precompute_de
 #   precompute_superpoint.yaml      # SuperPoint features
 ```
 
+### Window-based Bundle Adjustment (GeometryCrafter-style)
+```bash
+# Run window-based BA with cross-projection
+python -m src.window_ba /path/to/scene
+
+# With two-phase optimization (camera + 3D refinement)
+python -m src.window_ba /path/to/scene --use_refine
+
+# Custom config
+python -m src.window_ba /path/to/scene --config config/window_ba.yaml
+```
+
 ### Preprocessing Tools (Standalone)
 ```bash
 # Frame sampling
@@ -122,5 +134,6 @@ python -m src.precompute.precompute /data/scene --config config/precompute_geome
 
 ## Development References
 
-- Detailed plans: `docs/todo_refactoring.md`, `docs/todo_depth.md`
+- Detailed plans: `docs/todo_refactoring.md`, `docs/todo_depth.md`, `docs/todo_globalba.md`
+- Window BA implementation: `src/window_ba/` (GeometryCrafter-style cross-projection)
 - Submodules: GeometryCrafter, CoTracker, Super-COLMAP

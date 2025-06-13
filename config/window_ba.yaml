@@ -1,0 +1,45 @@
+# Window-based Bundle Adjustment Configuration
+# Following GeometryCrafter's approach
+
+device: cuda  # cuda or cpu
+
+# Track loading configuration
+track_loader:
+  track_pattern: "*_sift.npy"  # Pattern for track files
+  depth_subdir: "depth/GeometryCrafter"  # Subdirectory for depth maps
+
+# Optimization configuration
+optimization:
+  # Phase 1: Camera-only optimization
+  max_iterations: 10000
+  learning_rate_camera: 0.001  # For quaternion rotations
+  learning_rate_translation: 0.01  # For translations
+  learning_rate_fov: 0.0001  # For FOV parameters
+  
+  # Phase 2: Joint optimization (if --use_refine)
+  learning_rate_3d: 0.01  # For 3D points
+  
+  # Convergence
+  convergence_threshold: 1.0e-6
+  gradient_clip: 1.0
+  
+  # Robust loss
+  use_robust_loss: true
+  robust_loss_sigma: 1.0  # Huber loss threshold
+
+# Output configuration
+output:
+  save_intermediate: true  # Save Phase 1 results separately
+  save_colmap: true  # Export to COLMAP format
+  colmap_format: binary  # binary or text
+
+# Window processing
+window:
+  # These are typically set by the track files
+  # window_size: 50
+  # interval: 10
+  
+# Camera initialization
+camera:
+  # Initial FOV if intrinsics not available
+  default_fov_degrees: 60
