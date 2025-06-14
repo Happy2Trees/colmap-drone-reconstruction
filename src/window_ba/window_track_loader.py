@@ -15,9 +15,12 @@ logger = logging.getLogger(__name__)
 class WindowTrackLoader:
     """Load and manage window-based tracks without merging."""
     
-    def __init__(self, scene_dir: Path, device: str = 'cuda'):
+    def __init__(self, scene_dir: Path, device: str = 'cuda', 
+                 image_width: int = 1024, image_height: int = 576):
         self.scene_dir = Path(scene_dir)
         self.device = device
+        self.image_width = image_width
+        self.image_height = image_height
         self.intrinsics = self._load_intrinsics()
         self.distortion = self._load_distortion()
         
@@ -26,9 +29,11 @@ class WindowTrackLoader:
         K_path = self.scene_dir / 'K.txt'
         if not K_path.exists():
             logger.warning(f"K.txt not found at {K_path}, using default intrinsics")
-            # Default intrinsics (can be adjusted)
-            return np.array([[1000, 0, 512],
-                           [0, 1000, 288],
+            # Default intrinsics with principal point at image center
+            cx = self.image_width / 2
+            cy = self.image_height / 2
+            return np.array([[1000, 0, cx],
+                           [0, 1000, cy],
                            [0, 0, 1]], dtype=np.float32)
         
         K = np.loadtxt(K_path).reshape(3, 3).astype(np.float32)
@@ -107,14 +112,34 @@ class WindowTrackLoader:
                 tracks = window_data['tracks']  # (T, N, 2)
                 visibility = window_data['visibility']  # (T, N)
                 
-                # Query time indicates when points were extracted (0=start, T-1=end)
-                # In GeometryCrafter, query points are only at window boundaries
-                num_points = tracks.shape[1]
-                query_time = np.zeros(num_points, dtype=np.int32)
+                # Query time indicates when points were extracted within the window
+                # query_time = 0 means extracted from window's first frame (relative)
+                # query_time = T-1 means extracted from window's last frame
                 
-                # Assume first half are from start frame, second half from end frame
-                # (This should be adjusted based on actual data structure)
-                query_time[num_points//2:] = tracks.shape[0] - 1
+                # Get query times (should always be present in new data)
+                if 'query_times' in window_data:
+                    query_time = window_data['query_times'].astype(np.int32)
+                else:
+                    # Legacy data without query_times - assume all from first frame
+                    num_points = tracks.shape[1]
+                    query_time = np.zeros(num_points, dtype=np.int32)
+                    logger.warning(f"Window {window_id}: No query_times found, assuming legacy unidirectional tracking")
+                
+                # Check if bidirectional tracking was used
+                is_bidirectional = window_data.get('bidirectional', False)
+                if is_bidirectional or np.any(query_time > 0):
+                    # Bidirectional tracking confirmed
+                    num_start_queries = np.sum(query_time == 0)
+                    num_end_queries = np.sum(query_time > 0)
+                    logger.info(f"Window {window_id}: Bidirectional tracks with {num_start_queries} start queries and {num_end_queries} end queries")
+                else:
+                    # Unidirectional tracking
+                    logger.info(f"Window {window_id}: Unidirectional tracks with {len(query_time)} points from start frame")
+                
+                # GeometryCrafter uses points from both boundaries:
+                # - Some from window start (query_time = 0)
+                # - Some from window end (query_time = window_size - 1)
+                # This enables better cross-window consistency in Phase 2
                 
                 window_tracks.append({
                     'window_idx': window_id,
@@ -193,17 +218,39 @@ class WindowTrackLoader:
             
             # Load depth maps for this window
             depths = []
-            for frame_idx in range(start_frame, end_frame + 1):
-                # Assuming depth files are named like 00000.npz, 00005.npz, etc.
-                depth_file = depth_dir / f"{frame_idx:05d}.npz"
+            
+            # Get list of available depth files to determine naming pattern
+            depth_files = sorted(depth_dir.glob("*.npz"))
+            if depth_files and len(depth_files) > 1:
+                # Extract frame numbers from filenames
+                frame_numbers = []
+                for f in depth_files[:10]:  # Check first 10 files
+                    if f.stem.isdigit():
+                        frame_numbers.append(int(f.stem))
+                
+                # Detect frame interval (e.g., 5 for 00000, 00005, 00010...)
+                if len(frame_numbers) > 1:
+                    frame_interval = frame_numbers[1] - frame_numbers[0]
+                else:
+                    frame_interval = 1
+            else:
+                frame_interval = 1
+            
+            # Load depth maps with proper frame mapping
+            for local_idx in range(end_frame - start_frame):
+                frame_idx = start_frame + local_idx
+                # Map sequence index to actual frame number
+                actual_frame_num = frame_idx * frame_interval
+                depth_file = depth_dir / f"{actual_frame_num:05d}.npz"
+                
                 if depth_file.exists():
                     depth_data = np.load(depth_file)
                     depth = torch.from_numpy(depth_data['depth']).to(self.device)
                     depths.append(depth)
                 else:
-                    logger.warning(f"Depth file not found: {depth_file}")
-                    # Use dummy depth
-                    H, W = 576, 1024  # Default size
+                    logger.warning(f"Depth file not found: {depth_file} (frame index: {frame_idx})")
+                    # Use dummy depth with configured dimensions
+                    H, W = self.image_height, self.image_width
                     depths.append(torch.ones(H, W, device=self.device))
             
             # Sample depth at track locations

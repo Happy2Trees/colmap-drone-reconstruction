@@ -30,12 +30,18 @@ python -m src.precompute.precompute /path/to/scene --config config/precompute_de
 # Run window-based BA with cross-projection
 python -m src.window_ba /path/to/scene
 
-# With two-phase optimization (camera + 3D refinement)
+# With two-phase optimization (camera + 3D refinement) - FULLY IMPLEMENTED
 python -m src.window_ba /path/to/scene --use_refine
 
 # Custom config
 python -m src.window_ba /path/to/scene --config config/window_ba.yaml
 ```
+
+**Key Features:**
+- Phase 1: Camera-only optimization with fixed 3D from depth
+- Phase 2: Joint optimization of cameras + boundary 3D points
+- Automatic visualization generation (PNG files for CLI)
+- COLMAP export with optimized boundary points
 
 ### Preprocessing Tools (Standalone)
 ```bash
@@ -134,6 +140,11 @@ python -m src.precompute.precompute /data/scene --config config/precompute_geome
 
 ## Development References
 
-- Detailed plans: `docs/todo_refactoring.md`, `docs/todo_depth.md`, `docs/todo_globalba.md`
-- Window BA implementation: `src/window_ba/` (GeometryCrafter-style cross-projection)
+- Implementation details: `docs/todo_globalba.md` (COMPLETED)
+- Window BA modules:
+  - `src/window_ba/window_track_loader.py`: Window-based track loading
+  - `src/window_ba/window_depth_initializer.py`: Depth-based 3D initialization
+  - `src/window_ba/window_bundle_adjuster.py`: Cross-projection BA with Phase 2
+  - `src/window_ba/visualization.py`: CLI-compatible visualization
+  - `src/window_ba/pipeline.py`: Complete pipeline with COLMAP export
 - Submodules: GeometryCrafter, CoTracker, Super-COLMAP

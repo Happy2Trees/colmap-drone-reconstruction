@@ -19,6 +19,7 @@ from colmap_utils import read_write_model
 from .window_track_loader import WindowTrackLoader
 from .window_depth_initializer import WindowDepthInitializer
 from .window_bundle_adjuster import WindowBundleAdjuster, OptimizationConfig
+from .visualization import WindowBAVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class WindowBAPipeline:
         default_config = {
             'device': 'cuda',
             'track_loader': {
-                'track_pattern': '*_sift.npy',
+                'track_mode': 'sift',
                 'depth_subdir': 'depth/GeometryCrafter'
             },
             'optimization': {
@@ -65,9 +66,97 @@ class WindowBAPipeline:
         
         return default_config
     
+    def _detect_completed_steps(self, output_dir: Path) -> int:
+        """
+        Automatically detect which steps have been completed by checking output files.
+        
+        Returns:
+            Last completed step number (0-5)
+        """
+        # Step 5: COLMAP export exists
+        if (output_dir / 'colmap' / 'cameras.bin').exists() or (output_dir / 'colmap' / 'cameras.txt').exists():
+            logger.info("Detected: Pipeline fully completed (Step 5)")
+            return 5
+            
+        # Step 4: Phase 2 results exist (check for boundary_3d_optimized in tracks)
+        if (output_dir / 'window_tracks_3d.npz').exists():
+            data = np.load(output_dir / 'window_tracks_3d.npz', allow_pickle=True)
+            if 'windows' in data:
+                windows = data['windows']
+                # Check if any window has boundary_3d_optimized (Phase 2 marker)
+                if any('boundary_3d_optimized' in w for w in windows):
+                    logger.info("Detected: Phase 2 completed (Step 4)")
+                    return 4
+                    
+        # Step 3: Phase 1 camera results exist
+        if (output_dir / 'cameras_phase1.npz').exists():
+            logger.info("Detected: Phase 1 completed (Step 3)")
+            return 3
+            
+        # Step 2: 3D initialized tracks exist
+        if (output_dir / 'checkpoint_tracks_3d.npz').exists():
+            logger.info("Detected: 3D initialization completed (Step 2)")
+            return 2
+            
+        # Step 1: Basic tracks loaded
+        if (output_dir / 'checkpoint_tracks.npz').exists():
+            logger.info("Detected: Track loading completed (Step 1)")
+            return 1
+            
+        logger.info("No previous progress detected, starting from beginning")
+        return 0
+        
+    def _save_checkpoint(self, output_dir: Path, step: int, data: Dict):
+        """Save checkpoint data for a specific step."""
+        if step == 1:
+            # Save tracks without depth
+            np.savez_compressed(output_dir / 'checkpoint_tracks.npz', 
+                               windows=[{k: v for k, v in w.items() if k != 'tracks_3d'} 
+                                       for w in data['window_tracks']])
+        elif step == 2:
+            # Save tracks with 3D
+            self._save_window_tracks(data['window_tracks'], output_dir / 'checkpoint_tracks_3d.npz')
+        # Phase 1 and 2 already save their own files
+        
+    def _load_checkpoint_data(self, output_dir: Path, step: int) -> Dict:
+        """Load checkpoint data based on completed step."""
+        data = {}
+        
+        if step >= 1:
+            # Load basic tracks
+            if (output_dir / 'checkpoint_tracks.npz').exists():
+                tracks_data = np.load(output_dir / 'checkpoint_tracks.npz', allow_pickle=True)
+                data['window_tracks'] = list(tracks_data['windows'])
+                
+        if step >= 2:
+            # Load 3D initialized tracks
+            if (output_dir / 'checkpoint_tracks_3d.npz').exists():
+                tracks_data = np.load(output_dir / 'checkpoint_tracks_3d.npz', allow_pickle=True)
+                data['window_tracks'] = list(tracks_data['windows'])
+                
+        if step >= 3:
+            # Load Phase 1 camera model
+            if (output_dir / 'cameras_phase1.npz').exists():
+                camera_data = np.load(output_dir / 'cameras_phase1.npz')
+                # We'll recreate the camera model in the main flow
+                data['camera_params'] = camera_data
+                
+            if (output_dir / 'phase1_history.json').exists():
+                with open(output_dir / 'phase1_history.json', 'r') as f:
+                    data['phase1_history'] = json.load(f)
+                    
+        if step >= 4:
+            # Load final cameras (which include Phase 2 results)
+            if (output_dir / 'cameras_final.npz').exists():
+                camera_data = np.load(output_dir / 'cameras_final.npz')
+                data['camera_params'] = camera_data
+                
+        return data
+    
     def run(self, scene_dir: Path, output_dir: Path, use_refine: bool = False) -> Dict:
         """
         Run the complete window-based bundle adjustment pipeline.
+        Automatically resumes from the last completed step.
         
         Args:
             scene_dir: Directory containing images, tracks, depth, and camera params
@@ -99,68 +188,210 @@ class WindowBAPipeline:
             'config': self.config
         }
         
+        # Auto-detect completed steps
+        completed_step = self._detect_completed_steps(output_dir)
+        
+        # Load checkpoint data if resuming
+        checkpoint_data = {}
+        if completed_step > 0:
+            checkpoint_data = self._load_checkpoint_data(output_dir, completed_step)
+            logger.info(f"Resuming from step {completed_step + 1}")
+            
+        # Initialize variables
+        window_tracks = checkpoint_data.get('window_tracks')
+        camera_model = None
+        phase1_history = checkpoint_data.get('phase1_history')
+        phase2_history = None
+        track_loader = None
+        
         try:
             # Step 1: Load tracks and camera parameters
-            logger.info("Step 1: Loading tracks and camera parameters")
-            track_loader = WindowTrackLoader(scene_dir, device=self.device)
+            if completed_step < 1:
+                logger.info("Step 1: Loading tracks and camera parameters")
+                track_loader = WindowTrackLoader(
+                    scene_dir, 
+                    device=self.device,
+                    image_width=self.config['camera']['image_width'],
+                    image_height=self.config['camera']['image_height']
+                )
+            else:
+                logger.info("Step 1: Already completed, loading from checkpoint")
+                # Still need track_loader for intrinsics
+                track_loader = WindowTrackLoader(
+                    scene_dir, 
+                    device=self.device,
+                    image_width=self.config['camera']['image_width'],
+                    image_height=self.config['camera']['image_height']
+                )
             
-            # Load window tracks (no merging)
-            track_dir = scene_dir / 'cotracker'
-            track_pattern = self.config['track_loader']['track_pattern']
-            window_tracks = track_loader.load_window_tracks(track_dir, track_pattern)
+            if completed_step < 1:
+                # Load window tracks (no merging)
+                track_dir = scene_dir / 'cotracker'
+                
+                # Get track pattern based on mode
+                track_mode = self.config['track_loader']['track_mode']
+                
+
+                # Check for bidirectional tracks first
+                bidirectional_patterns = {
+                    'sift': '*_sift_bidirectional.npy',
+                    'superpoint': '*_superpoint_bidirectional.npy',
+                    'grid': '*_grid_bidirectional.npy'
+                }
+                unidirectional_patterns = {
+                    'sift': '*_sift.npy',
+                    'superpoint': '*_superpoint.npy',
+                    'grid': '*_grid.npy'
+                }
+                
+                # Try bidirectional pattern first
+                bidirectional_pattern = bidirectional_patterns.get(track_mode, '*_sift_bidirectional.npy')
+                bidirectional_files = list(track_dir.glob(bidirectional_pattern))
+                
+                if bidirectional_files:
+                    track_pattern = bidirectional_pattern
+                    logger.info(f"Found bidirectional tracks with pattern: {track_pattern}")
+                else:
+                    # Fall back to unidirectional pattern
+                    track_pattern = unidirectional_patterns.get(track_mode, '*_sift.npy')
+                    logger.info(f"Using unidirectional tracks with pattern: {track_pattern}")
+                
+                window_tracks = track_loader.load_window_tracks(track_dir, track_pattern)
+                
+                results['num_windows'] = len(window_tracks)
+                results['total_frames'] = max(w['end_frame'] for w in window_tracks) + 1
+                
+                # Add depth to tracks
+                depth_dir = scene_dir / self.config['track_loader']['depth_subdir']
+                window_tracks = track_loader.create_tracks_with_depth(window_tracks, depth_dir)
+                
+                # Save checkpoint
+                self._save_checkpoint(output_dir, 1, {'window_tracks': window_tracks})
+                logger.info("Step 1 completed and checkpoint saved")
+            else:
+                # Update results from loaded data
+                results['num_windows'] = len(window_tracks)
+                results['total_frames'] = max(w['end_frame'] for w in window_tracks) + 1
             
-            results['num_windows'] = len(window_tracks)
-            results['total_frames'] = max(w['end_frame'] for w in window_tracks) + 1
+            # Get image dimensions from config (needed for all steps)
+            image_width = self.config['camera']['image_width']
+            image_height = self.config['camera']['image_height']
             
-            # Add depth to tracks
-            depth_dir = scene_dir / self.config['track_loader']['depth_subdir']
-            window_tracks = track_loader.create_tracks_with_depth(window_tracks, depth_dir)
-            
-            # Get image dimensions (assuming all images have same size)
-            # For now, using hardcoded values from the data
-            image_width, image_height = 1024, 576
-            
-            # Get FOV from intrinsics
+            # Get FOV from intrinsics (needed for optimization)
             fov_x, fov_y = track_loader.get_fov_from_intrinsics(image_width, image_height)
             tan_fov_x = np.tan(fov_x / 2)
             tan_fov_y = np.tan(fov_y / 2)
             
             # Step 2: Initialize 3D points from depth
-            logger.info("Step 2: Initializing 3D points from depth")
-            depth_initializer = WindowDepthInitializer(track_loader.intrinsics, device=self.device)
-            window_tracks = depth_initializer.triangulate_window_tracks(window_tracks)
-            window_tracks = depth_initializer.compute_depth_confidence(window_tracks)
+            if completed_step < 2:
+                logger.info("Step 2: Initializing 3D points from depth")
+                depth_initializer = WindowDepthInitializer(track_loader.intrinsics, device=self.device)
+                window_tracks = depth_initializer.triangulate_window_tracks(window_tracks)
+                
+                # Save checkpoint
+                self._save_checkpoint(output_dir, 2, {'window_tracks': window_tracks})
+                logger.info("Step 2 completed and checkpoint saved")
+            else:
+                logger.info("Step 2: Already completed, using loaded 3D tracks")
             
             # Step 3: Phase 1 - Camera-only optimization
-            logger.info("Step 3: Phase 1 - Camera-only optimization")
-            opt_config = OptimizationConfig(**self.config['optimization'])
-            bundle_adjuster = WindowBundleAdjuster(opt_config, device=self.device)
-            
-            camera_model, phase1_history = bundle_adjuster.optimize_phase1(
-                window_tracks, tan_fov_x, tan_fov_y
-            )
-            
-            results['phase1'] = {
-                'final_loss': phase1_history['losses'][-1] if phase1_history['losses'] else 0,
-                'iterations': len(phase1_history['losses']),
-                'converged': len(phase1_history['losses']) < opt_config.max_iterations
-            }
-            
-            # Save Phase 1 results
-            if self.config['output']['save_intermediate']:
-                self._save_cameras(camera_model, output_dir / 'cameras_phase1.npz')
-                self._save_history(phase1_history, output_dir / 'phase1_history.json')
+            if completed_step < 3:
+                logger.info("Step 3: Phase 1 - Camera-only optimization")
+                opt_config = OptimizationConfig(**self.config['optimization'])
+                single_camera = self.config.get('camera', {}).get('single_camera', False)
+                bundle_adjuster = WindowBundleAdjuster(
+                    opt_config, 
+                    device=self.device,
+                    image_width=image_width,
+                    image_height=image_height,
+                    single_camera=single_camera
+                )
+                
+                camera_model, phase1_history = bundle_adjuster.optimize_phase1(
+                    window_tracks, tan_fov_x, tan_fov_y
+                )
+                
+                results['phase1'] = {
+                    'final_loss': phase1_history['losses'][-1] if phase1_history['losses'] else 0,
+                    'iterations': len(phase1_history['losses']),
+                    'converged': len(phase1_history['losses']) < opt_config.max_iterations
+                }
+                
+                # Save Phase 1 results
+                if self.config['output']['save_intermediate']:
+                    self._save_cameras(camera_model, output_dir / 'cameras_phase1.npz')
+                    self._save_history(phase1_history, output_dir / 'phase1_history.json')
+                logger.info("Step 3 completed")
+            else:
+                logger.info("Step 3: Already completed, loading camera model")
+                # Recreate camera model from saved parameters
+                camera_params = checkpoint_data['camera_params']
+                max_frame = max(w['end_frame'] for w in window_tracks) + 1
+                single_camera = self.config.get('camera', {}).get('single_camera', False)
+                
+                from .window_bundle_adjuster import CameraModel
+                # Use initial FOV values (will be overwritten by saved values)
+                camera_model = CameraModel(
+                    max_frame, 
+                    tan_fov_x,  # Use computed initial values
+                    tan_fov_y,
+                    single_camera=single_camera
+                ).to(self.device)
+                
+                # Load saved parameters
+                camera_model.quaternions.data = torch.from_numpy(camera_params['quaternions']).to(self.device)
+                camera_model.translations.data = torch.from_numpy(camera_params['translations']).to(self.device)
+                
+                # Load FOV parameters
+                if single_camera:
+                    # Single scalar value
+                    camera_model.tan_fov_x.data = torch.tensor(float(camera_params['tan_fov_x'])).to(self.device)
+                    camera_model.tan_fov_y.data = torch.tensor(float(camera_params['tan_fov_y'])).to(self.device)
+                else:
+                    # Array of values
+                    camera_model.tan_fov_x.data = torch.from_numpy(camera_params['tan_fov_x']).to(self.device)
+                    camera_model.tan_fov_y.data = torch.from_numpy(camera_params['tan_fov_y']).to(self.device)
+                    
+                # Update results
+                if phase1_history:
+                    results['phase1'] = {
+                        'final_loss': phase1_history['losses'][-1] if phase1_history['losses'] else 0,
+                        'iterations': len(phase1_history['losses']),
+                        'converged': True
+                    }
             
             # Step 4: Phase 2 - Joint optimization (optional)
-            if use_refine:
+            phase2_history = None  # Initialize to avoid NameError
+            if use_refine and completed_step < 4:
                 logger.info("Step 4: Phase 2 - Joint camera and 3D optimization")
+                # Create bundle adjuster if not already created
+                if completed_step >= 3:
+                    opt_config = OptimizationConfig(**self.config['optimization'])
+                    single_camera = self.config.get('camera', {}).get('single_camera', False)
+                    bundle_adjuster = WindowBundleAdjuster(
+                        opt_config, 
+                        device=self.device,
+                        image_width=image_width,
+                        image_height=image_height,
+                        single_camera=single_camera
+                    )
+                    
                 camera_model, phase2_history = bundle_adjuster.optimize_phase2(
                     window_tracks, camera_model
                 )
                 results['phase2'] = phase2_history
+                logger.info("Step 4 completed")
+            elif use_refine and completed_step >= 4:
+                logger.info("Step 4: Already completed")
+                results['phase2'] = {'status': 'loaded_from_checkpoint'}
             
             # Step 5: Save final results
-            logger.info("Step 5: Saving final results")
+            if completed_step < 5:
+                logger.info("Step 5: Saving final results")
+            else:
+                logger.info("Step 5: Already completed")
+                logger.info("Pipeline was already fully completed!")
+                return results
             
             # Save optimized cameras
             self._save_cameras(camera_model, output_dir / 'cameras_final.npz')
@@ -183,6 +414,38 @@ class WindowBAPipeline:
             
             # Create human-readable summary
             self._create_summary(results, output_dir / 'summary.txt')
+            
+            # Create visualizations if enabled
+            if self.config.get('visualization', {}).get('enabled', True):
+                logger.info("Creating visualizations (saving as PNG files for CLI environment)")
+                try:
+                    visualizer = WindowBAVisualizer(output_dir / 'visualizations', image_width, image_height)
+                    
+                    # Camera trajectory
+                    visualizer.visualize_camera_trajectory(camera_model, window_tracks)
+                    
+                    # 3D points
+                    visualizer.visualize_3d_points(window_tracks, camera_model)
+                    
+                    # Reprojection errors
+                    visualizer.visualize_reprojection_errors(window_tracks, camera_model)
+                    
+                    # Summary visualization
+                    visualizer.create_summary_visualization(
+                        camera_model, window_tracks, 
+                        phase1_history, 
+                        phase2_history if use_refine else None
+                    )
+                    
+                    results['visualizations'] = {
+                        'created': True,
+                        'path': str(output_dir / 'visualizations'),
+                        'files': ['camera_trajectory.png', '3d_points.png', 'reprojection_errors.png', 'summary.png']
+                    }
+                    logger.info(f"Visualizations saved to {output_dir / 'visualizations'}")
+                except Exception as e:
+                    logger.warning(f"Failed to create visualizations: {e}")
+                    results['visualizations'] = {'created': False, 'error': str(e)}
             
             logger.info("Window BA pipeline completed successfully")
             
@@ -339,9 +602,53 @@ class WindowBAPipeline:
         return images
     
     def _create_colmap_points3D(self, window_tracks: List[Dict]) -> Dict:
-        """Create COLMAP points3D dictionary from window tracks."""
-        points3D = {}
+        """Create COLMAP points3D dictionary from window tracks.
         
+        If Phase 2 optimization was used, prioritize the optimized boundary points.
+        """
+        points3D = {}
+        next_point_id = 1  # COLMAP uses 1-based indexing
+        
+        # First, add Phase 2 optimized boundary points if available
+        for window in window_tracks:
+            if 'boundary_3d_optimized' in window:
+                # These are the boundary points optimized in Phase 2
+                boundary_3d = window['boundary_3d_optimized']  # (M, 3)
+                query_time = window.get('query_time', None)
+                
+                if query_time is not None:
+                    # Separate start and end boundary points
+                    mask_first = (query_time == 0)
+                    mask_last = (query_time == window.get('window_size', 50) - 1)
+                    
+                    # Add start boundary points
+                    for i, is_first in enumerate(mask_first):
+                        if is_first and i < boundary_3d.shape[0]:
+                            xyz = boundary_3d[i]
+                            
+                            # Find which frames can see this point
+                            image_ids = []
+                            point2D_idxs = []
+                            for t in range(window['tracks'].shape[0]):
+                                if window['visibility'][t, i]:
+                                    global_frame_idx = window['start_frame'] + t
+                                    image_ids.append(global_frame_idx + 1)
+                                    point2D_idxs.append(i)
+                            
+                            if len(image_ids) > 0:
+                                points3D[next_point_id] = read_write_model.Point3D(
+                                    id=next_point_id,
+                                    xyz=xyz,
+                                    rgb=np.array([128, 128, 128]),  # Default gray color
+                                    error=0.1,  # Default error
+                                    image_ids=np.array(image_ids),
+                                    point2D_idxs=np.array(point2D_idxs)
+                                )
+                                next_point_id += 1
+                
+                logger.info(f"Added {len(boundary_3d)} optimized boundary points from window {window['window_idx']}")
+        
+        # Then add regular 3D points from depth initialization
         for window in window_tracks:
             # Get 3D points for this window
             if 'xyzw_world' not in window:
@@ -354,8 +661,17 @@ class WindowBAPipeline:
             
             # For each point in the window
             for point_idx in range(N):
+                # Skip if this is a boundary point already added from Phase 2
+                if 'boundary_3d_optimized' in window:
+                    query_time = window.get('query_time', None)
+                    if query_time is not None:
+                        # Check if this point is a boundary point
+                        if query_time[point_idx] == 0 or query_time[point_idx] == window.get('window_size', 50) - 1:
+                            continue  # Skip, already added from optimized boundary points
+                
                 # Create unique point3D ID
-                point3D_id = window['window_idx'] * 10000 + point_idx
+                point3D_id = next_point_id
+                next_point_id += 1
                 
                 # Find frames where this point is visible
                 visible_frames = []

@@ -3,7 +3,7 @@
 # Features to extract
 features:
   - cotracker  # Already extracted
-  - depth
+  # - depth
   # - flow
 
 # CoTracker settings (kept for reference but not used)
@@ -11,8 +11,9 @@ cotracker:
   window_size: 50
   interval: 10
   initialization_method: sift  # Options: grid, sift, superpoint
-  grid_size: 20
+  max_features: 900  # For grid: will create sqrt(900) = 30x30 grid. For sift/superpoint: max number of features
   device: cuda
+  bidirectional: true  # Extract tracks from both start and end of each window (GeometryCrafter-style)
 
 # GeometryCrafter depth estimation settings
 depth:

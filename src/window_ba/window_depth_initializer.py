@@ -97,16 +97,31 @@ class WindowDepthInitializer:
             
             # For query points (used in Phase 2 refinement)
             # Extract 3D points only at window boundaries
+            # This is a key concept from GeometryCrafter: only optimize boundary 3D points
             query_time = window['query_time']
             query_mask_start = (query_time == 0)
             query_mask_end = (query_time == window['window_size'] - 1)
             
-            # Query 3D points at start and end frames
-            query_3d_start = xyzw_world[0, query_mask_start, :3]  # (N_start, 3)
-            query_3d_end = xyzw_world[-1, query_mask_end, :3]  # (N_end, 3)
+            # Extract 3D points at window boundaries
+            # For bidirectional tracking:
+            # - Points from start frame (query_time = 0) use their 3D positions at frame 0
+            # - Points from end frame (query_time = T-1) use their 3D positions at frame T-1
+            # This provides 3D anchors at both window boundaries for cross-window optimization
             
-            window['query_3d_start'] = query_3d_start.cpu().numpy()
-            window['query_3d_end'] = query_3d_end.cpu().numpy()
+            # Start boundary points: extracted at frame 0, use 3D position at frame 0
+            if query_mask_start.any():
+                query_3d_start = xyzw_world[0, query_mask_start, :3]  # (N_start, 3)
+                window['query_3d_start'] = query_3d_start.cpu().numpy()
+            else:
+                window['query_3d_start'] = np.zeros((0, 3), dtype=np.float32)
+            
+            # End boundary points: extracted at frame T-1, use 3D position at frame T-1
+            if query_mask_end.any():
+                end_frame_idx = window['window_size'] - 1
+                query_3d_end = xyzw_world[end_frame_idx, query_mask_end, :3]  # (N_end, 3)
+                window['query_3d_end'] = query_3d_end.cpu().numpy()
+            else:
+                window['query_3d_end'] = np.zeros((0, 3), dtype=np.float32)
             
         logger.info("Triangulated 3D points for all windows using depth")
         return window_tracks
@@ -151,43 +166,3 @@ class WindowDepthInitializer:
         
         return tan_fov_x, tan_fov_y
     
-    def compute_depth_confidence(self, window_tracks: List[Dict]) -> List[Dict]:
-        """
-        Compute confidence scores for 3D points based on depth consistency.
-        
-        Args:
-            window_tracks: Window tracks with 3D points
-            
-        Returns:
-            Updated window tracks with confidence scores
-        """
-        for window in window_tracks:
-            if 'tracks_3d' not in window:
-                continue
-                
-            tracks_3d = window['tracks_3d']  # (T, N, 3)
-            visibility = window['visibility']  # (T, N)
-            
-            T, N, _ = tracks_3d.shape
-            confidence = np.ones((T, N), dtype=np.float32)
-            
-            # Compute depth consistency across frames
-            for n in range(N):
-                visible_frames = np.where(visibility[:, n])[0]
-                if len(visible_frames) > 1:
-                    # Get depths for this point across visible frames
-                    depths = tracks_3d[visible_frames, n, 2]
-                    
-                    # Compute relative depth variation
-                    depth_mean = np.mean(depths)
-                    depth_std = np.std(depths)
-                    
-                    if depth_mean > 0:
-                        relative_std = depth_std / depth_mean
-                        # Higher confidence for lower variation
-                        point_confidence = np.exp(-relative_std)
-                        confidence[visible_frames, n] = point_confidence
-            
-            window['confidence'] = confidence
-            
-        return window_tracks

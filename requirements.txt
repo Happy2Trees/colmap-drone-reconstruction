@@ -5,7 +5,7 @@ Pillow
 scipy
 pyyaml
 decord>=0.6.0  # For video reading
-
+natsort
 
 # Co-tracker dependencies
 matplotlib

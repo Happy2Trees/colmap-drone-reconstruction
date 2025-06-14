@@ -37,7 +37,6 @@ class PrecomputePipeline:
                 window_size=cotracker_config.get('window_size', 48),
                 interval=cotracker_config.get('interval', 10),
                 initialization_method=cotracker_config.get('initialization_method', 'grid'),
-                grid_size=cotracker_config.get('grid_size', 20),
                 device=cotracker_config.get('device', 'cuda'),
                 max_features=cotracker_config.get('max_features', 400),
                 superpoint_weights=cotracker_config.get('superpoint_weights', None)
@@ -282,7 +281,14 @@ class PrecomputePipeline:
         if 'cotracker' in self.extractors:
             logging.info("Extracting CoTracker tracks...")
             try:
-                track_data = self.extractors['cotracker'].extract_tracks(image_dir)
+                # Get bidirectional setting from config (default to True for better tracking)
+                cotracker_config = self.config.get('cotracker', {})
+                bidirectional = cotracker_config.get('bidirectional', True)
+                
+                track_data = self.extractors['cotracker'].extract_tracks(
+                    image_dir, 
+                    bidirectional=bidirectional
+                )
                 results['cotracker'] = {
                     'status': 'success',
                     'num_windows': len(track_data['tracks']),

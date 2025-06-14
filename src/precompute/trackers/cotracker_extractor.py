@@ -28,7 +28,6 @@ class CoTrackerExtractor(BaseTracker):
                  window_size: int = 48,
                  interval: int = 10,
                  initialization_method: str = 'grid',
-                 grid_size: int = 20,
                  device: str = 'cuda',
                  max_features: int = 400,
                  superpoint_weights: Optional[str] = None):
@@ -37,16 +36,16 @@ class CoTrackerExtractor(BaseTracker):
             window_size: Number of frames per window
             interval: Frame interval between window starts
             initialization_method: 'grid', 'sift', or 'superpoint'
-            grid_size: Grid size for grid initialization (grid_size x grid_size points)
             device: Device to run on
-            max_features: Maximum number of features for SIFT/SuperPoint
+            max_features: Maximum number of features
+                - For grid: will create approximately sqrt(max_features) x sqrt(max_features) grid
+                - For SIFT/SuperPoint: maximum number of features to extract
             superpoint_weights: Path to SuperPoint weights file (optional)
         """
         super().__init__(device)
         self.window_size = window_size
         self.interval = interval
         self.initialization_method = initialization_method
-        self.grid_size = grid_size
         self.max_features = max_features
         
         # Load model
@@ -67,7 +66,9 @@ class CoTrackerExtractor(BaseTracker):
     def _get_feature_initializer(self, superpoint_weights: Optional[str] = None):
         """Get the appropriate feature initializer based on method"""
         if self.initialization_method == 'grid':
-            return GridInitializer(grid_size=self.grid_size, max_features=self.grid_size * self.grid_size)
+            # Calculate grid size from max_features (approximate square grid)
+            grid_size = int(np.sqrt(self.max_features))
+            return GridInitializer(grid_size=grid_size, max_features=self.max_features)
         elif self.initialization_method == 'sift':
             return SIFTInitializer(max_features=self.max_features, grid_filter=True)
         elif self.initialization_method == 'superpoint':
@@ -136,13 +137,15 @@ class CoTrackerExtractor(BaseTracker):
     
     def extract_tracks(self, 
                       image_dir: str,
-                      output_path: Optional[str] = None) -> Dict:
+                      output_path: Optional[str] = None,
+                      bidirectional: bool = True) -> Dict:
         """
         Extract tracks for all windows and save as .npy file
         
         Args:
             image_dir: Directory containing images
             output_path: Output path for .npy file. If None, auto-generated.
+            bidirectional: If True, extract tracks from both start and end of each window
             
         Returns:
             Dictionary containing tracks and metadata
@@ -177,8 +180,32 @@ class CoTrackerExtractor(BaseTracker):
             video_tensor = video_tensor.unsqueeze(0).to(self.device)
             
             # Get query points for this window
-            first_frame_path = image_paths[start]
-            query_points, extra_info = self._get_query_points(first_frame_path, window_frame_offset=0)
+            if bidirectional:
+                # Extract query points from both start and end frames
+                first_frame_path = image_paths[start]
+                last_frame_path = image_paths[end - 1]
+                
+                # Get query points from start frame (forward tracking)
+                query_points_start, extra_info_start = self._get_query_points(first_frame_path, window_frame_offset=0)
+                
+                # Get query points from end frame (backward tracking)
+                window_length = end - start
+                query_points_end, extra_info_end = self._get_query_points(last_frame_path, window_frame_offset=window_length - 1)
+                
+                # Combine query points and track which frame they came from
+                query_points = np.concatenate([query_points_start, query_points_end], axis=0)
+                query_times = np.concatenate([
+                    np.zeros(len(query_points_start)),  # Start frame queries
+                    np.full(len(query_points_end), window_length - 1)  # End frame queries
+                ])
+                
+                logging.info(f"  Bidirectional tracking: {len(query_points_start)} points from start, {len(query_points_end)} points from end")
+            else:
+                # Original unidirectional tracking (from start only)
+                first_frame_path = image_paths[start]
+                query_points, extra_info = self._get_query_points(first_frame_path, window_frame_offset=0)
+                query_times = np.zeros(len(query_points))
+            
             queries = torch.from_numpy(query_points).float().to(self.device)
             queries = queries.unsqueeze(0)  # Add batch dimension
             
@@ -193,6 +220,8 @@ class CoTrackerExtractor(BaseTracker):
                 'end_frame': end,
                 'tracks': pred_tracks[0].cpu().numpy(),  # Remove batch dim
                 'visibility': pred_visibility[0].cpu().numpy(),  # Remove batch dim
+                'query_times': query_times,  # Store which frame each query came from
+                'bidirectional': bidirectional,
             }
             
             all_window_tracks.append(window_data)
@@ -209,6 +238,7 @@ class CoTrackerExtractor(BaseTracker):
                 'interval': self.interval,
                 'initialization_method': self.initialization_method,
                 'total_frames': total_frames,
+                'bidirectional': bidirectional,
             }
         }
         
@@ -218,7 +248,8 @@ class CoTrackerExtractor(BaseTracker):
             cotracker_dir = scene_dir / 'cotracker'
             cotracker_dir.mkdir(exist_ok=True)
             
-            filename = f"{self.window_size}_{self.interval}_{self.initialization_method}.npy"
+            suffix = "_bidirectional" if bidirectional else ""
+            filename = f"{self.window_size}_{self.interval}_{self.initialization_method}{suffix}.npy"
             output_path = cotracker_dir / filename
         
         np.save(output_path, output_data, allow_pickle=True)
@@ -267,6 +298,8 @@ class CoTrackerExtractor(BaseTracker):
             
             metadata = track_data['metadata']
             suffix = f"{metadata['window_size']}_{metadata['interval']}_{metadata['initialization_method']}"
+            if metadata.get('bidirectional', False):
+                suffix += "_bidirectional"
             output_dir = viz_dir / f"cotracker_{suffix}"
         else:
             output_dir = Path(output_dir)
@@ -311,6 +344,10 @@ class CoTrackerExtractor(BaseTracker):
             end = window_tracks['end_frame']
             num_points = tracks.shape[1]
             
+            # Get query times if available (for bidirectional tracking)
+            query_times = window_tracks.get('query_times', np.zeros(num_points))
+            is_bidirectional = window_tracks.get('bidirectional', False)
+            
             # Create trajectories for this window
             for i in range(num_points):
                 traj = {
@@ -318,7 +355,10 @@ class CoTrackerExtractor(BaseTracker):
                     'visibility': np.zeros(total_frames, dtype=bool),
                     'window_idx': window_idx,
                     'start_frame': start,
-                    'end_frame': end
+                    'end_frame': end,
+                    'query_time': query_times[i] if is_bidirectional else 0,
+                    'is_forward': query_times[i] == 0,  # True if tracked from start frame
+                    'is_bidirectional': is_bidirectional
                 }
                 
                 # Fill in positions for frames in this window
@@ -330,12 +370,19 @@ class CoTrackerExtractor(BaseTracker):
                 
                 trajectories.append(traj)
             
+            # Count forward and backward tracks for this window
+            num_forward = np.sum(query_times == 0) if is_bidirectional else num_points
+            num_backward = np.sum(query_times > 0) if is_bidirectional else 0
+            
             window_trajectories.append({
                 'trajectories': trajectories,
                 'window_idx': window_idx,
                 'start_frame': start,
                 'end_frame': end,
-                'num_tracks': num_points
+                'num_tracks': num_points,
+                'num_forward': num_forward,
+                'num_backward': num_backward,
+                'is_bidirectional': is_bidirectional
             })
         
         return window_trajectories
@@ -374,6 +421,7 @@ class CoTrackerExtractor(BaseTracker):
             trajectories = window_data['trajectories']
             window_start = window_data['start_frame']
             window_end = window_data['end_frame']
+            is_bidirectional = window_data.get('is_bidirectional', False)
             
             # Only draw if current frame is within this window's range
             if window_start <= current_frame_idx < window_end:
@@ -381,6 +429,7 @@ class CoTrackerExtractor(BaseTracker):
                 for traj_idx, (traj, color) in enumerate(zip(trajectories, colors)):
                     positions = traj['positions']
                     visibility = traj['visibility']
+                    is_forward = traj.get('is_forward', True)
                     
                     # Draw trail (past positions within this window)
                     trail_start = max(window_start, current_frame_idx - trail_length)
@@ -403,9 +452,28 @@ class CoTrackerExtractor(BaseTracker):
                     if visibility[current_frame_idx]:
                         if not np.isnan(positions[current_frame_idx]).any():
                             pt = positions[current_frame_idx].astype(int)
-                            # Draw point with white outline
-                            cv2.circle(frame_vis, tuple(pt), point_size + 1, (255, 255, 255), -1)
-                            cv2.circle(frame_vis, tuple(pt), point_size, color, -1)
+                            
+                            if is_bidirectional:
+                                # Different shapes for forward (circle) and backward (square) tracks
+                                if is_forward:
+                                    # Forward tracks: circles
+                                    cv2.circle(frame_vis, tuple(pt), point_size + 1, (255, 255, 255), -1)
+                                    cv2.circle(frame_vis, tuple(pt), point_size, color, -1)
+                                else:
+                                    # Backward tracks: squares
+                                    half_size = point_size
+                                    cv2.rectangle(frame_vis, 
+                                                (pt[0] - half_size - 1, pt[1] - half_size - 1),
+                                                (pt[0] + half_size + 1, pt[1] + half_size + 1),
+                                                (255, 255, 255), -1)
+                                    cv2.rectangle(frame_vis, 
+                                                (pt[0] - half_size, pt[1] - half_size),
+                                                (pt[0] + half_size, pt[1] + half_size),
+                                                color, -1)
+                            else:
+                                # Unidirectional tracks: circles only
+                                cv2.circle(frame_vis, tuple(pt), point_size + 1, (255, 255, 255), -1)
+                                cv2.circle(frame_vis, tuple(pt), point_size, color, -1)
         
         # Add window info
         self._add_frame_info(frame_vis, current_frame_idx, window_trajectories)
@@ -422,16 +490,36 @@ class CoTrackerExtractor(BaseTracker):
         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, 
                    (255, 255, 255), 2, cv2.LINE_AA)
         
-        # Active windows
+        # Active windows and bidirectional info
         active_windows = []
+        has_bidirectional = False
         for window_data in window_trajectories:
             if window_data['start_frame'] <= current_frame_idx < window_data['end_frame']:
                 active_windows.append(window_data['window_idx'])
+                if window_data.get('is_bidirectional', False):
+                    has_bidirectional = True
         
         if active_windows:
             window_text = f"Windows: {', '.join(map(str, active_windows))}"
             cv2.putText(frame, window_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
                        (255, 255, 255), 2, cv2.LINE_AA)
+            
+            # Add bidirectional tracking legend if applicable
+            if has_bidirectional:
+                # Legend for bidirectional tracking
+                legend_y = h - 60
+                cv2.putText(frame, "Tracking:", (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, 
+                           (255, 255, 255), 1, cv2.LINE_AA)
+                
+                # Circle for forward tracks
+                cv2.circle(frame, (90, legend_y - 5), 5, (255, 255, 255), -1)
+                cv2.putText(frame, "Forward", (100, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
+                           (255, 255, 255), 1, cv2.LINE_AA)
+                
+                # Square for backward tracks
+                cv2.rectangle(frame, (180, legend_y - 10), (190, legend_y), (255, 255, 255), -1)
+                cv2.putText(frame, "Backward", (195, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
+                           (255, 255, 255), 1, cv2.LINE_AA)
     
     def _create_video(self, image_paths: List[Path], 
                      window_trajectories: List[Dict],
@@ -476,10 +564,13 @@ class CoTrackerExtractor(BaseTracker):
     def _create_summary_plot(self, track_data: Dict, output_dir: Path) -> None:
         """Create summary visualization plot"""
         metadata = track_data['metadata']
+        is_bidirectional = metadata.get('bidirectional', False)
         
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        fig.suptitle(f'CoTracker Precompute Summary - {metadata["initialization_method"].upper()}', 
-                    fontsize=16)
+        title = f'CoTracker Precompute Summary - {metadata["initialization_method"].upper()}'
+        if is_bidirectional:
+            title += ' (Bidirectional)'
+        fig.suptitle(title, fontsize=16)
         
         # 1. Window timeline
         ax = axes[0, 0]
@@ -498,11 +589,28 @@ class CoTrackerExtractor(BaseTracker):
         
         # 2. Track count per window
         ax = axes[0, 1]
-        track_counts = [w['tracks'].shape[1] for w in windows]
-        ax.bar(range(len(track_counts)), track_counts)
+        if is_bidirectional:
+            # Stacked bar chart for forward/backward tracks
+            forward_counts = []
+            backward_counts = []
+            for w in windows:
+                query_times = w.get('query_times', np.zeros(w['tracks'].shape[1]))
+                forward_counts.append(np.sum(query_times == 0))
+                backward_counts.append(np.sum(query_times > 0))
+            
+            x = range(len(windows))
+            ax.bar(x, forward_counts, label='Forward', color='skyblue', alpha=0.8)
+            ax.bar(x, backward_counts, bottom=forward_counts, label='Backward', color='lightcoral', alpha=0.8)
+            ax.legend()
+            ax.set_title('Forward/Backward Tracks per Window')
+        else:
+            # Simple bar chart for unidirectional
+            track_counts = [w['tracks'].shape[1] for w in windows]
+            ax.bar(range(len(track_counts)), track_counts)
+            ax.set_title('Tracks per Window')
+        
         ax.set_xlabel('Window')
         ax.set_ylabel('Number of Tracks')
-        ax.set_title('Tracks per Window')
         
         # 3. Configuration info
         ax = axes[1, 0]
@@ -519,6 +627,7 @@ class CoTrackerExtractor(BaseTracker):
         ax = axes[1, 1]
         ax.axis('off')
         
+        track_counts = [w['tracks'].shape[1] for w in windows]
         total_tracks = sum(track_counts)
         avg_tracks = np.mean(track_counts)
         
@@ -527,6 +636,13 @@ class CoTrackerExtractor(BaseTracker):
         stats_text += f"Total tracks: {total_tracks}\n"
         stats_text += f"Average tracks/window: {avg_tracks:.1f}\n"
         stats_text += f"Total frames: {metadata['total_frames']}\n"
+        
+        if is_bidirectional:
+            total_forward = sum(np.sum(w.get('query_times', np.zeros(w['tracks'].shape[1])) == 0) for w in windows)
+            total_backward = total_tracks - total_forward
+            stats_text += f"\nBidirectional Tracking:\n"
+            stats_text += f"Forward tracks: {total_forward} ({total_forward/total_tracks*100:.1f}%)\n"
+            stats_text += f"Backward tracks: {total_backward} ({total_backward/total_tracks*100:.1f}%)\n"
         
         ax.text(0.1, 0.5, stats_text, transform=ax.transAxes,
                fontsize=12, verticalalignment='center',

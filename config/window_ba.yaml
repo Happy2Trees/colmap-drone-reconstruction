@@ -5,7 +5,7 @@ device: cuda  # cuda or cpu
 
 # Track loading configuration
 track_loader:
-  track_pattern: "*_sift.npy"  # Pattern for track files
+  track_mode: "sift"  # Options: sift, superpoint, grid
   depth_subdir: "depth/GeometryCrafter"  # Subdirectory for depth maps
 
 # Optimization configuration
@@ -26,6 +26,10 @@ optimization:
   # Robust loss
   use_robust_loss: true
   robust_loss_sigma: 1.0  # Huber loss threshold
+  
+  # Loss weights
+  proj_loss_weight: 1.0  # Weight for reprojection loss
+  depth_loss_weight: 0.0  # Weight for depth consistency (GeometryCrafter default: 0)
 
 # Output configuration
 output:
@@ -33,13 +37,19 @@ output:
   save_colmap: true  # Export to COLMAP format
   colmap_format: binary  # binary or text
 
-# Window processing
-window:
-  # These are typically set by the track files
-  # window_size: 50
-  # interval: 10
-  
 # Camera initialization
 camera:
+  # Image dimensions
+  image_width: 1024
+  image_height: 576
+  
+  # Single camera mode (all frames share same intrinsics)
+  single_camera: true  # If true, FOV is shared across all frames
+  
   # Initial FOV if intrinsics not available
   default_fov_degrees: 60
+
+# Visualization settings
+visualization:
+  enabled: true  # Generate visualization plots
+  # All plots are saved as PNG files for CLI environments
