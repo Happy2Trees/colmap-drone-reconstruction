@@ -161,6 +161,11 @@ for i in range(T):  # Source frame
   - debug_num_windows: 처음 N개의 window만 사용
   - debug_window_sampling: first, random, evenly_spaced 전략 지원
   - 빠른 디버깅과 iteration 시간 단축 가능
+- **Window Sampling 최적화** (2025-01-15)
+  - Window sampling을 매 iteration마다 수행하던 것을 phase 시작 시 한 번만 수행하도록 개선
+  - 불필요한 반복 로그 출력 제거
+  - Progress bar에 사용 중인 window 개수 표시
+  - 성능 개선: 매 iteration마다 발생하던 sampling 오버헤드 제거
 
 ### 🔧 최근 개선사항
 - 자동 체크포인트 시스템 구현
