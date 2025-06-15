@@ -33,6 +33,10 @@ optimization:
   
   # Logging
   log_interval: 50  # Log every N iterations
+  
+  # Debug options for faster testing
+  debug_num_windows: null  # Set to N to use only first N windows (null = use all)
+  debug_window_sampling: "first"  # Options: first, random, evenly_spaced
 
 # Output configuration
 output:

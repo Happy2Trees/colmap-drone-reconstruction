@@ -8,6 +8,7 @@ import torch.nn as nn
 import numpy as np
 import logging
 import time
+import random
 from typing import List, Dict, Tuple
 from tqdm import tqdm
 
@@ -185,8 +186,11 @@ class WindowBundleAdjuster:
         logger.info("Starting Phase 2 optimization (camera + 3D)")
         start_time = time.time()
         
+        # Apply window sampling for debugging if configured
+        sampled_tracks = self._sample_windows_for_debug(window_tracks)
+        
         # Initialize boundary 3D points
-        self._initialize_boundary_points(window_tracks, camera_model)
+        self._initialize_boundary_points(sampled_tracks, camera_model)
         
         if self.boundary_3d_points is None:
             logger.warning("No boundary points found - skipping Phase 2")
@@ -218,7 +222,7 @@ class WindowBundleAdjuster:
             camera_model.normalize_quaternions()
             
             # Compute loss
-            loss, loss_info = self._compute_phase2_loss(window_tracks, camera_model)
+            loss, loss_info = self._compute_phase2_loss(sampled_tracks, camera_model)
             
             if loss.item() == 0:
                 logger.warning("Phase 2 loss is zero - stopping")
@@ -272,8 +276,8 @@ class WindowBundleAdjuster:
         else:
             logger.info(f"Final loss: {loss.item():.6f}")
         
-        # Store optimized boundary points back to window tracks
-        self._update_window_boundary_points(window_tracks)
+        # Store optimized boundary points back to sampled window tracks
+        self._update_window_boundary_points(sampled_tracks)
         
         # Create optimization result
         result = OptimizationResult(
@@ -287,6 +291,52 @@ class WindowBundleAdjuster:
         )
         
         return camera_model, result
+    
+    def _sample_windows_for_debug(self, window_tracks: List[WindowTrackData]) -> List[WindowTrackData]:
+        """
+        Sample a subset of windows for debugging if configured.
+        
+        Args:
+            window_tracks: All available window tracks
+            
+        Returns:
+            Sampled window tracks based on debug configuration
+        """
+        # If no debug sampling configured, return all windows
+        if self.config.debug_num_windows is None:
+            return window_tracks
+        
+        # Limit the number of windows
+        num_windows = min(self.config.debug_num_windows, len(window_tracks))
+        
+        if num_windows == len(window_tracks):
+            return window_tracks
+        
+        # Apply sampling strategy
+        if self.config.debug_window_sampling == "first":
+            sampled = window_tracks[:num_windows]
+            logger.info(f"Debug mode: Using first {num_windows} windows out of {len(window_tracks)}")
+        
+        elif self.config.debug_window_sampling == "random":
+            sampled = random.sample(window_tracks, num_windows)
+            sampled.sort(key=lambda w: w.window_idx)  # Keep order for logging
+            logger.info(f"Debug mode: Randomly sampled {num_windows} windows out of {len(window_tracks)}")
+        
+        elif self.config.debug_window_sampling == "evenly_spaced":
+            # Select evenly spaced windows
+            step = len(window_tracks) / num_windows
+            indices = [int(i * step) for i in range(num_windows)]
+            sampled = [window_tracks[i] for i in indices]
+            logger.info(f"Debug mode: Evenly sampled {num_windows} windows out of {len(window_tracks)}")
+        
+        else:
+            raise ValueError(f"Unknown debug_window_sampling: {self.config.debug_window_sampling}")
+        
+        # Log selected windows
+        window_indices = [w.window_idx for w in sampled]
+        logger.info(f"Selected window indices: {window_indices}")
+        
+        return sampled
     
     def _setup_phase1_optimizer(self, camera_model: CameraModel) -> torch.optim.Optimizer:
         """Setup optimizer for Phase 1."""
@@ -319,7 +369,10 @@ class WindowBundleAdjuster:
         num_projections = 0
         losses_per_window = []
         
-        for window_idx, window_data in enumerate(window_tracks):
+        # Apply window sampling for debugging if configured
+        sampled_tracks = self._sample_windows_for_debug(window_tracks)
+        
+        for window_idx, window_data in enumerate(sampled_tracks):
             # Convert to torch tensors
             window = window_data  # Using WindowTrackData directly
             
@@ -440,7 +493,7 @@ class WindowBundleAdjuster:
                 else:
                     c2w_mat = torch.linalg.inv(proj_mats[t])
                     
-            except RuntimeError as e:
+            except RuntimeError:
                 logger.error(f"Failed to invert proj_mats[{t}]:\n{proj_mats[t]}")
                 logger.error(f"Matrix determinant: {torch.det(proj_mats[t][:3, :3])}")
                 logger.error(f"Matrix diagonal: {torch.diag(proj_mats[t])}")

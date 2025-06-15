@@ -61,6 +61,24 @@ def main():
         help='Enable verbose logging'
     )
     
+    # Debug options
+    parser.add_argument(
+        '--optimization.debug_num_windows',
+        type=int,
+        default=None,
+        dest='debug_num_windows',
+        help='Use only first N windows for debugging (default: use all)'
+    )
+    
+    parser.add_argument(
+        '--optimization.debug_window_sampling',
+        type=str,
+        default=None,
+        dest='debug_window_sampling',
+        choices=['first', 'random', 'evenly_spaced'],
+        help='Window sampling strategy for debugging (default: first)'
+    )
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -87,6 +105,12 @@ def main():
     try:
         # Create pipeline
         pipeline = WindowBAPipeline(config_path=args.config)
+        
+        # Update configuration with command-line arguments
+        if args.debug_num_windows is not None:
+            pipeline.config_manager.update_from_args(**{'optimization.debug_num_windows': args.debug_num_windows})
+        if args.debug_window_sampling is not None:
+            pipeline.config_manager.update_from_args(**{'optimization.debug_window_sampling': args.debug_window_sampling})
         
         # Run pipeline
         results = pipeline.run(

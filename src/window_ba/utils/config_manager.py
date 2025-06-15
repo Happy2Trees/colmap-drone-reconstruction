@@ -53,6 +53,10 @@ class OptimizationConfig:
     # Logging
     log_interval: int = 100
     
+    # Debug options for faster testing
+    debug_num_windows: Optional[int] = None  # Use only first N windows (None = use all)
+    debug_window_sampling: str = "first"  # Options: first, random, evenly_spaced
+    
     def __post_init__(self) -> None:
         """Validate configuration."""
         if self.max_iterations <= 0:
@@ -61,6 +65,13 @@ class OptimizationConfig:
             raise ValueError("convergence_threshold must be positive")
         if self.gradient_clip <= 0:
             raise ValueError("gradient_clip must be positive")
+        
+        # Validate debug options
+        if self.debug_num_windows is not None and self.debug_num_windows <= 0:
+            raise ValueError("debug_num_windows must be positive or None")
+        valid_sampling = ["first", "random", "evenly_spaced"]
+        if self.debug_window_sampling not in valid_sampling:
+            raise ValueError(f"debug_window_sampling must be one of {valid_sampling}")
 
 
 @dataclass

@@ -52,6 +52,15 @@ python -m src.window_ba /path/to/scene --use_refine
 
 # Custom config
 python -m src.window_ba /path/to/scene --config config/window_ba.yaml
+
+# 디버깅: 처음 3개 window만 사용
+python -m src.window_ba /path/to/scene --optimization.debug_num_windows 3
+
+# 디버깅: 5개 window를 random sampling
+python -m src.window_ba /path/to/scene --optimization.debug_num_windows 5 --optimization.debug_window_sampling random
+
+# 디버깅: 4개 window를 evenly spaced로 선택
+python -m src.window_ba /path/to/scene --optimization.debug_num_windows 4 --optimization.debug_window_sampling evenly_spaced
 ```
 
 ### 데이터 구조
@@ -148,6 +157,10 @@ for i in range(T):  # Source frame
   - tqdm progress bar 추가로 실시간 진행률 표시
   - Phase별 소요 시간 측정 및 표시
   - Window 처리 상황 로깅
+- **디버깅용 Window Sampling 기능 추가** (2025-01-15)
+  - debug_num_windows: 처음 N개의 window만 사용
+  - debug_window_sampling: first, random, evenly_spaced 전략 지원
+  - 빠른 디버깅과 iteration 시간 단축 가능
 
 ### 🔧 최근 개선사항
 - 자동 체크포인트 시스템 구현
@@ -304,6 +317,37 @@ optimization:
 - `_compute_cross_projection_loss`: frame pair 평균 제거
 - Adam optimizer epsilon을 1e-15로 설정 (GeometryCrafter와 동일)
 - 결과: Identity pose에서도 depth 차이로 충분한 gradient 생성
+
+## GeometryCrafter Backpropagation 분석 (2025-01-15)
+
+GeometryCrafter의 SFM 구현을 분석한 결과:
+
+### Gradient Accumulation Pattern
+- **중간 backpropagation 없음**: 각 window의 loss만 계산하고 합산
+- **단일 backward pass**: 모든 window 처리 후 한 번만 backward() 호출
+- **1 iteration = 모든 window 처리**: mini-batch가 아닌 full-batch 방식
+
+```python
+# GeometryCrafter의 패턴
+for iter in range(num_iterations):
+    loss = 0.0
+    optimizer.zero_grad()
+    
+    # 모든 window의 loss 합산
+    for window in tracks:
+        loss_window = compute_loss(window)  # backward() 없음
+        loss += loss_window
+    
+    # 모든 window 후 한 번만
+    loss.backward()
+    optimizer.step()
+```
+
+### 성능 특성
+- **장점**: 안정적인 gradient, 모든 window가 동시에 기여
+- **단점**: 1 iteration이 매우 오래 걸림 (예: 10 window × 50 frames × 49 projections = 24,500 projections)
+
+이를 개선하기 위해 debug_num_windows 옵션을 추가하여 빠른 디버깅이 가능하도록 함.
 
 ## 참고 자료
 

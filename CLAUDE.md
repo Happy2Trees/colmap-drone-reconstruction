@@ -35,6 +35,12 @@ python -m src.window_ba /path/to/scene --use_refine
 
 # Custom config
 python -m src.window_ba /path/to/scene --config config/window_ba.yaml
+
+# Debug mode with only first 3 windows
+python -m src.window_ba /path/to/scene --optimization.debug_num_windows 3
+
+# Debug with random sampling
+python -m src.window_ba /path/to/scene --optimization.debug_num_windows 5 --optimization.debug_window_sampling random
 ```
 
 **Key Features:**
