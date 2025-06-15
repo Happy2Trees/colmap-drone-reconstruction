@@ -8,13 +8,10 @@ import matplotlib
 # Use non-interactive backend for CLI environments
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import torch
 from pathlib import Path
 import logging
-from typing import List, Dict, Optional, Tuple
-import cv2
-from PIL import Image
+from typing import List, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +46,7 @@ class WindowBAVisualizer:
         
         # Create 3D plot
         fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
+        ax = fig.add_subplot(111, projection='3d')  # 3D axes
         
         # Plot camera trajectory
         ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], 
@@ -57,7 +54,7 @@ class WindowBAVisualizer:
         
         # Plot camera positions
         ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2], 
-                  c='red', s=20, label='Camera positions')
+                  c='red', label='Camera positions', s=20)  # type: ignore
         
         # Mark window boundaries
         window_boundaries = set()
@@ -67,7 +64,7 @@ class WindowBAVisualizer:
         
         boundary_positions = positions[list(window_boundaries)]
         ax.scatter(boundary_positions[:, 0], boundary_positions[:, 1], boundary_positions[:, 2],
-                  c='green', s=100, marker='^', label='Window boundaries')
+                  c='green', marker='^', label='Window boundaries', s=100)  # type: ignore
         
         # Add camera orientations (show every 10th camera)
         for i in range(0, len(positions), 10):
@@ -84,7 +81,8 @@ class WindowBAVisualizer:
         
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
+        if hasattr(ax, 'set_zlabel'):
+            ax.set_zlabel('Z')  # type: ignore
         ax.set_title('Camera Trajectory')
         ax.legend()
         
@@ -142,20 +140,22 @@ class WindowBAVisualizer:
             
         if boundary_points:
             boundary_points = np.array(boundary_points)
+        else:
+            boundary_points = np.zeros((0, 3))
         
         # Create plot
         fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
+        ax = fig.add_subplot(111, projection='3d')  # 3D axes
         
         # Plot regular 3D points
         if all_points.shape[0] > 0:
             ax.scatter(all_points[:, 0], all_points[:, 1], all_points[:, 2],
-                      c='blue', s=1, alpha=0.3, label=f'3D points ({all_points.shape[0]})')
+                      c='blue', marker='o', s=1, alpha=0.3, label=f'3D points ({all_points.shape[0]})')  # type: ignore
         
         # Plot boundary points in different color
         if boundary_points.shape[0] > 0:
             ax.scatter(boundary_points[:, 0], boundary_points[:, 1], boundary_points[:, 2],
-                      c='red', s=10, alpha=0.8, label=f'Boundary points ({boundary_points.shape[0]})')
+                      c='red', marker='o', s=10, alpha=0.8, label=f'Boundary points ({boundary_points.shape[0]})')  # type: ignore
         
         # Add cameras if provided
         if camera_model is not None:
@@ -166,7 +166,8 @@ class WindowBAVisualizer:
         
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
+        if hasattr(ax, 'set_zlabel'):
+            ax.set_zlabel('Z')  # type: ignore
         ax.set_title('3D Point Cloud')
         ax.legend()
         
@@ -199,7 +200,7 @@ class WindowBAVisualizer:
         num_frames = max(w['end_frame'] for w in window_tracks) + 1
         frame_indices = np.linspace(0, num_frames-1, sample_frames, dtype=int)
         
-        fig, axes = plt.subplots(1, sample_frames, figsize=(4*sample_frames, 4))
+        _, axes = plt.subplots(1, sample_frames, figsize=(4*sample_frames, 4))
         if sample_frames == 1:
             axes = [axes]
             
@@ -369,7 +370,7 @@ class WindowBAVisualizer:
         
         # 5. If Phase 2 was used, add boundary points visualization
         if phase2_history and 'losses' in phase2_history:
-            ax5 = fig.add_subplot(gs[2, :], projection='3d')
+            ax5 = fig.add_subplot(gs[2, :], projection='3d')  # 3D axes
             
             # Collect boundary points
             boundary_points_start = []
@@ -395,12 +396,12 @@ class WindowBAVisualizer:
             if boundary_points_start:
                 points_start = np.array(boundary_points_start)
                 ax5.scatter(points_start[:, 0], points_start[:, 1], points_start[:, 2],
-                          c='blue', s=20, alpha=0.6, label='Start boundary')
+                          c='blue', marker='o', alpha=0.6, label='Start boundary', s=20)  # type: ignore
             
             if boundary_points_end:
                 points_end = np.array(boundary_points_end)
                 ax5.scatter(points_end[:, 0], points_end[:, 1], points_end[:, 2],
-                          c='red', s=20, alpha=0.6, label='End boundary')
+                          c='red', marker='o', alpha=0.6, label='End boundary', s=20)  # type: ignore
             
             # Add camera path
             ax5.plot(positions[:, 0], positions[:, 1], positions[:, 2],
@@ -408,7 +409,8 @@ class WindowBAVisualizer:
             
             ax5.set_xlabel('X')
             ax5.set_ylabel('Y')
-            ax5.set_zlabel('Z')
+            if hasattr(ax5, 'set_zlabel'):
+                ax5.set_zlabel('Z')  # type: ignore
             ax5.set_title('Optimized Boundary Points')
             ax5.legend()
             self._set_axes_equal(ax5)
@@ -433,8 +435,9 @@ class WindowBAVisualizer:
         
         return R
     
-    def _set_axes_equal(self, ax: Axes3D) -> None:
+    def _set_axes_equal(self, ax: Any) -> None:
         """Set equal aspect ratio for 3D axes."""
+        # Type hint as Any to avoid pylance issues with Axes3D methods
         limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
         centers = np.mean(limits, axis=1)
         radius = 0.5 * np.max(np.abs(limits[:, 1] - limits[:, 0]))

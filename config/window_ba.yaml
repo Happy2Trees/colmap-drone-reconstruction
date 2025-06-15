@@ -30,6 +30,9 @@ optimization:
   # Loss weights
   proj_loss_weight: 1.0  # Weight for reprojection loss
   depth_loss_weight: 0.0  # Weight for depth consistency (GeometryCrafter default: 0)
+  
+  # Logging
+  log_interval: 50  # Log every N iterations
 
 # Output configuration
 output:

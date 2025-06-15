@@ -148,14 +148,15 @@ class WindowTrackLoader:
                     'tracks': tracks,
                     'visibility': visibility,
                     'query_time': query_time,
-                    'window_size': window_size,
-                    'interval': interval
+                    'window_size': tracks.shape[0],  # Use actual frame count
+                    'interval': interval,
+                    'bidirectional': is_bidirectional
                 })
         
         if window_tracks:
             logger.info(f"Loaded {len(window_tracks)} window tracks")
-            logger.info(f"First window: frames {window_tracks[0]['start_frame']}-{window_tracks[0]['end_frame']}")
-            logger.info(f"Last window: frames {window_tracks[-1]['start_frame']}-{window_tracks[-1]['end_frame']}")
+            logger.info(f"First window: frames {window_tracks[0]['start_frame']}-{window_tracks[0]['end_frame']-1}")
+            logger.info(f"Last window: frames {window_tracks[-1]['start_frame']}-{window_tracks[-1]['end_frame']-1}")
         else:
             logger.error("No window tracks were loaded!")
         

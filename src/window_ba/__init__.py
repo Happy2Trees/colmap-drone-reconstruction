@@ -8,9 +8,9 @@ This module implements:
 - Two-phase optimization (camera-only, then camera+3D)
 """
 
-from .window_track_loader import WindowTrackLoader
-from .window_depth_initializer import WindowDepthInitializer
-from .window_bundle_adjuster import WindowBundleAdjuster
+from .core.window_track_loader import WindowTrackLoader
+from .core.window_depth_initializer import WindowDepthInitializer
+from .core.window_bundle_adjuster import WindowBundleAdjuster
 from .pipeline import WindowBAPipeline
 
 __all__ = [

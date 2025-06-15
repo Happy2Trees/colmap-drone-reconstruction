@@ -126,7 +126,7 @@ class WindowDepthInitializer:
         logger.info("Triangulated 3D points for all windows using depth")
         return window_tracks
     
-    def compute_intrinsics_from_tracks(self, window_tracks: List[Dict], 
+    def compute_intrinsics_from_tracks(self, _window_tracks: List[Dict],
                                      image_width: int, image_height: int) -> Tuple[float, float]:
         """
         Estimate camera intrinsics from tracks if not provided.
