@@ -77,11 +77,14 @@ class WindowBundleAdjuster:
         logger.info("Starting Phase 1 optimization (camera-only)")
         start_time = time.time()
         
+        # Apply window sampling for debugging if configured
+        sampled_tracks = self._sample_windows_for_debug(window_tracks)
+        
         # Initialize camera model
         # Note: end_frame is exclusive, so no need to add 1
         max_frame = max(track.end_frame for track in window_tracks)
-        logger.info(f"Max frame index: {max_frame}, Number of windows: {len(window_tracks)}")
-        logger.info(f"Frame ranges: {[(w.start_frame, w.end_frame) for w in window_tracks[:5]]}")  # Show first 5
+        logger.info(f"Max frame index: {max_frame}, Total windows: {len(window_tracks)}, Using: {len(sampled_tracks)}")
+        logger.info(f"Frame ranges: {[(w.start_frame, w.end_frame) for w in sampled_tracks[:5]]}")  # Show first 5
         
         camera_model = CameraModel(
             max_frame, init_tan_fov_x, init_tan_fov_y, 
@@ -101,14 +104,15 @@ class WindowBundleAdjuster:
         loss_info = {'mean_reprojection_error': 0.0}  # Initialize loss_info
         
         logger.info(f"Starting optimization with {self.config.max_iterations} iterations...")
-        pbar = tqdm(range(self.config.max_iterations), desc="Phase 1 Optimization")
+        pbar = tqdm(range(self.config.max_iterations), 
+                   desc=f"Phase 1 Optimization ({len(sampled_tracks)} windows)")
         
         for iteration in pbar:
             # Normalize quaternions
             camera_model.normalize_quaternions()
             
             # Compute loss
-            loss, loss_info = self._compute_phase1_loss(window_tracks, camera_model)
+            loss, loss_info = self._compute_phase1_loss(sampled_tracks, camera_model)
             
             # Backward pass
             optimizer.zero_grad()
@@ -215,7 +219,8 @@ class WindowBundleAdjuster:
         loss_info = {'mean_reprojection_error': 0.0, 'num_boundary_points': 0}  # Initialize loss_info
         
         logger.info(f"Starting optimization with {self.config.max_iterations} iterations...")
-        pbar = tqdm(range(self.config.max_iterations), desc="Phase 2 Optimization")
+        pbar = tqdm(range(self.config.max_iterations), 
+                   desc=f"Phase 2 Optimization ({len(sampled_tracks)} windows)")
         
         for iteration in pbar:
             # Normalize quaternions
@@ -369,10 +374,7 @@ class WindowBundleAdjuster:
         num_projections = 0
         losses_per_window = []
         
-        # Apply window sampling for debugging if configured
-        sampled_tracks = self._sample_windows_for_debug(window_tracks)
-        
-        for window_idx, window_data in enumerate(sampled_tracks):
+        for window_idx, window_data in enumerate(window_tracks):
             # Convert to torch tensors
             window = window_data  # Using WindowTrackData directly
             
