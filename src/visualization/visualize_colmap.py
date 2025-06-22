@@ -178,7 +178,7 @@ def plot_colmap_data(images, points3D, colors3D, cameras_data=None, scale=0.5, o
 
 
     # plt.show()
-    output_filename = output_path if output_path else 'colmap_visualization.png'
+    output_filename = output_path if output_path else 'colmap_camera_trajectory_plot.png'
     # Create output directory if it doesn't exist
     output_dir = os.path.dirname(output_filename)
     if output_dir:
@@ -192,8 +192,8 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser(description="Visualize COLMAP reconstruction results")
     parser.add_argument("sparse_path", help="Path to COLMAP sparse reconstruction directory")
-    parser.add_argument("--output", default="outputs/visualizations/colmap_visualization.png", 
-                        help="Output image path (default: outputs/visualizations/colmap_visualization.png)")
+    parser.add_argument("--output", default="outputs/visualizations/colmap_camera_trajectory_plot.png", 
+                        help="Output image path (default: outputs/visualizations/colmap_camera_trajectory_plot.png)")
     
     args = parser.parse_args()
     
