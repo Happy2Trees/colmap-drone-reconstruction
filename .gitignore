@@ -131,4 +131,7 @@ submodules/co-tracker/*.egg-info/
 *.tar
 *.tar.gz
 *.rar
-*.7zworkspace/
+*.7z
+
+# Workspace caches
+workspace/

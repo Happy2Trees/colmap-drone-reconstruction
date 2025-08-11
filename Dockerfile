@@ -58,19 +58,26 @@ SHELL ["/bin/bash", "-c"]
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends --no-install-suggests \
-        libboost-program-options1.83.0 \
-        libc6 \
-        libceres4t64 \
-        libfreeimage3 \
-        libgcc-s1 \
-        libgl1 \
-        libglew2.2 \
-        libgoogle-glog0v6t64 \
-        libqt5core5a \
-        libqt5gui5 \
-        libqt5widgets5 \
-        libcurl4
-
+        git \
+        cmake \
+        ninja-build \
+        build-essential \
+        libboost-program-options-dev \
+        libboost-graph-dev \
+        libboost-system-dev \
+        libeigen3-dev \
+        libflann-dev \
+        libfreeimage-dev \
+        libmetis-dev \
+        libgoogle-glog-dev \
+        libgtest-dev \
+        libgmock-dev \
+        libsqlite3-dev \
+        libglew-dev \
+        qtbase5-dev \
+        libqt5opengl5-dev \
+        libcgal-dev \
+        libceres-dev
 ######## PIP
 # OS 패키지 업데이트 및 필요한 패키지 설치
 RUN apt-get update && apt-get install -y \

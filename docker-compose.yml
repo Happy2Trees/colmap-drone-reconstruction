@@ -4,7 +4,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: colmap
+    image: mosca2
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     container_name: colmap_ct
     ipc: host
     environment:
@@ -16,7 +19,7 @@ services:
     runtime: nvidia
     cpuset: "48-95"
     ports:
-      - "6022:6022"
+      - "6032:6032"
     stdin_open: true  # -i 옵션: 표준 입력 활성화
     tty: true         # -t 옵션: TTY 할당
     deploy:
