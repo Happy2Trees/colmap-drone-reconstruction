@@ -11,7 +11,8 @@
       "Bash(rg:*)",
       "mcp__ide__getDiagnostics",
       "Bash(mkdir:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(python:*)"
     ],
     "deny": []
   }

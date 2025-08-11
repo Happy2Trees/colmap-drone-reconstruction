@@ -10,3 +10,9 @@
 [submodule "submodules/GeometryCrafter"]
 	path = submodules/GeometryCrafter
 	url = https://github.com/TencentARC/GeometryCrafter.git
+[submodule "submodules/DeepLSD"]
+	path = submodules/DeepLSD
+	url = https://github.com/cvg/DeepLSD.git
+[submodule "submodules/sam2"]
+	path = submodules/sam2
+	url = https://github.com/facebookresearch/sam2.git
