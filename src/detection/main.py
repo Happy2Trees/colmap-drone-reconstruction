@@ -157,23 +157,26 @@ def do_train(args: argparse.Namespace) -> None:
         device=args.device,
         workers=args.workers,
         optimizer="auto",
-        # augmentations
+        # augmentations: keep only the listed ones
         augment=True,
-        mosaic=1.0,
-        mixup=0.2,
-        copy_paste=0.3,
-        erasing=0.4,
         degrees=10.0,
         translate=0.10,
-        scale=0.90,
-        shear=5.0,
-        perspective=0.001,
-        flipud=0.5,
+        scale=0.60,
+        shear=3.0,
+        perspective=0.0005,
         fliplr=0.5,
-        hsv_h=0.015,
-        hsv_s=0.7,
-        hsv_v=0.4,
-        pretrain=True,
+        flipud=0.5,
+        # explicitly disable other common augs
+        mosaic=0.0,
+        mixup=0.0,
+        copy_paste=0.0,
+        erasing=0.0,
+        hsv_h=0.0,
+        hsv_s=0.0,
+        hsv_v=0.0,
+        # Always start from pretrained pose weights if a YAML is provided.
+        # If a .pt is provided to YOLO(), this flag is ignored safely.
+        pretrained=True,
         project=str(Path("outputs") / "yolo_pose"),
         name=args.run_name,
     )
@@ -185,8 +188,10 @@ def do_train(args: argparse.Namespace) -> None:
         print(f"[warn] Retrying train with reduced aug args due to: {e}")
         reduced = {k: v for k, v in train_kwargs.items() if k in {
             "data","epochs","imgsz","batch","device","workers","optimizer","augment",
-            "degrees","translate","scale","shear","perspective","flipud","fliplr",
-            "hsv_h","hsv_s","hsv_v","project","name"}}
+            "degrees","translate","scale","shear","perspective","fliplr","flipud",
+            # keep disables for widely supported args
+            "mosaic","mixup","hsv_h","hsv_s","hsv_v",
+            "project","name","pretrained"}}
         model.train(**reduced)
 
 
