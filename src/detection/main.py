@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import random
 import sys
@@ -179,6 +180,9 @@ def do_train(args: argparse.Namespace) -> None:
         pretrained=True,
         project=str(Path("outputs") / "yolo_pose"),
         name=args.run_name,
+        # Loss weights: lower box, higher pose
+        box=5.0,
+        pose=15.0,
     )
 
     # Some options may vary by ultralytics version; run with a safe subset if needed
@@ -191,6 +195,8 @@ def do_train(args: argparse.Namespace) -> None:
             "degrees","translate","scale","shear","perspective","fliplr","flipud",
             # keep disables for widely supported args
             "mosaic","mixup","hsv_h","hsv_s","hsv_v",
+            # ensure loss weights persist in fallback
+            "box","pose",
             "project","name","pretrained"}}
         model.train(**reduced)
 
@@ -214,6 +220,84 @@ def do_predict(args: argparse.Namespace) -> None:
         if getattr(r, "keypoints", None) is not None:
             print(f"[info] Image {i}: keypoints shape = {getattr(r.keypoints, 'shape', None)}")
             print(f"[info] First 5 keypoints (xy): {getattr(r.keypoints, 'xy', None)[:,:5] if hasattr(r.keypoints, 'xy') else None}")
+
+    # Optional: save predictions to JSON files (per image)
+    if getattr(args, "save_json", False):
+        # Default JSON directory: outputs/yolo_pose/<run-name>/json
+        base_dir = Path("outputs") / "yolo_pose" / args.run_name
+        json_dir = Path(args.json_dir) if args.json_dir else (base_dir / "json")
+        json_dir.mkdir(parents=True, exist_ok=True)
+
+        for r in results:
+            try:
+                img_path = getattr(r, "path", None) or ""
+                img_name = os.path.basename(img_path) if img_path else None
+                h, w = getattr(r, "orig_shape", (None, None))
+                names = getattr(r, "names", {}) or {}
+
+                dets = []
+
+                # Boxes
+                n = 0
+                xyxy = conf = cls_ids = None
+                if getattr(r, "boxes", None) is not None and r.boxes is not None:
+                    try:
+                        xyxy = r.boxes.xyxy.detach().cpu().numpy().tolist()
+                        conf = r.boxes.conf.detach().cpu().numpy().tolist() if getattr(r.boxes, 'conf', None) is not None else None
+                        cls_ids = r.boxes.cls.detach().cpu().numpy().tolist() if getattr(r.boxes, 'cls', None) is not None else None
+                        n = len(xyxy)
+                    except Exception:
+                        pass
+
+                # Keypoints
+                kpts_xy = kpts_conf = None
+                if getattr(r, "keypoints", None) is not None and r.keypoints is not None:
+                    try:
+                        kpts_xy = r.keypoints.xy.detach().cpu().numpy().tolist()
+                    except Exception:
+                        kpts_xy = None
+                    # confidence/visibility can be absent depending on version
+                    try:
+                        if hasattr(r.keypoints, 'conf') and r.keypoints.conf is not None:
+                            kpts_conf = r.keypoints.conf.detach().cpu().numpy().tolist()
+                        elif hasattr(r.keypoints, 'confidence') and r.keypoints.confidence is not None:
+                            kpts_conf = r.keypoints.confidence.detach().cpu().numpy().tolist()
+                    except Exception:
+                        kpts_conf = None
+
+                    if n == 0 and kpts_xy is not None:
+                        n = len(kpts_xy)
+
+                # Build detection list (align by index where possible)
+                for i in range(n):
+                    box_i = xyxy[i] if xyxy is not None and i < len(xyxy) else None
+                    conf_i = conf[i] if conf is not None and i < len(conf) else None
+                    cls_i = cls_ids[i] if cls_ids is not None and i < len(cls_ids) else None
+                    label_i = names.get(int(cls_i)) if cls_i is not None and isinstance(names, dict) else None
+                    kxy_i = kpts_xy[i] if kpts_xy is not None and i < len(kpts_xy) else None
+                    kcf_i = kpts_conf[i] if kpts_conf is not None and i < len(kpts_conf) else None
+
+                    dets.append({
+                        "cls": int(cls_i) if cls_i is not None else None,
+                        "label": label_i,
+                        "conf": float(conf_i) if conf_i is not None else None,
+                        "box_xyxy": [float(v) for v in box_i] if box_i is not None else None,
+                        "keypoints_xy": [[float(x), float(y)] for x, y in kxy_i] if kxy_i is not None else None,
+                        "keypoints_conf": [float(v) for v in kcf_i] if kcf_i is not None else None,
+                    })
+
+                record = {
+                    "image": img_path,
+                    "image_name": img_name,
+                    "shape": [int(h) if h is not None else None, int(w) if w is not None else None],
+                    "detections": dets,
+                }
+
+                out_path = json_dir / (Path(img_path).stem + ".json" if img_path else "prediction.json")
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump(record, f, ensure_ascii=False, indent=args.json_indent)
+            except Exception as e:
+                print(f"[warn] Failed to write JSON for {getattr(r, 'path', None)}: {e}")
 
 
 def do_export(args: argparse.Namespace) -> None:
@@ -244,7 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--class-name", default="object")
     pt.add_argument("--run-name", default="train")
     pt.set_defaults(func=do_train)
-
+    
     # Predict
     pp = sub.add_parser("predict", help="Run inference with a trained pose model")
     pp.add_argument("--weights", default="outputs/yolo_pose/train/weights/best.pt")
@@ -255,6 +339,10 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--device", default=None)
     pp.add_argument("--save", action="store_true")
     pp.add_argument("--run-name", default="predict")
+    # JSON output controls
+    pp.add_argument("--save-json", action="store_true", help="Save predictions (boxes/keypoints) to per-image JSON files")
+    pp.add_argument("--json-dir", default=None, help="Directory to save JSON files. Defaults to outputs/yolo_pose/<run-name>/json")
+    pp.add_argument("--json-indent", type=int, default=2, help="Indent level for JSON pretty-printing")
     pp.set_defaults(func=do_predict)
 
     # Export
