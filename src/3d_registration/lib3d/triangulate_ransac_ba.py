@@ -204,77 +204,7 @@ def ransac_triangulate(P_list, uv_list, reproj_thresh_px=2.0, max_iters=200, min
     info = {'num_inliers': int(len(in_idx)), 'mean_err': float(np.mean(errs)) if errs else None, 'max_err': float(np.max(errs)) if errs else None, 'fallback': False}
     return Xr, best_inliers, info
 
-# ============================
-# Bundle Adjustment (per-image extrinsics + points; intrinsics fixed)
-# ============================
-
-def rodrigues_to_R(r: np.ndarray) -> np.ndarray:
-    theta = np.linalg.norm(r)
-    if theta < 1e-12: return np.eye(3)
-    k = r / theta
-    K = np.array([[0, -k[2], k[1]],[k[2], 0, -k[0]],[ -k[1], k[0], 0]])
-    R = np.eye(3) + np.sin(theta)*K + (1-np.cos(theta))*(K@K)
-    return R
-
-def R_to_rodrigues(R: np.ndarray) -> np.ndarray:
-    theta = np.arccos(max(min((np.trace(R)-1)/2, 1.0), -1.0))
-    if theta < 1e-12: return np.zeros(3)
-    rx = (R[2,1]-R[1,2])/(2*np.sin(theta))
-    ry = (R[0,2]-R[2,0])/(2*np.sin(theta))
-    rz = (R[1,0]-R[0,1])/(2*np.sin(theta))
-    return theta*np.array([rx,ry,rz])
-
-def pack_params(cam_params: Dict[int, Dict[str,Any]], X_map: Dict[int, np.ndarray], cam_ids: List[int], point_ids: List[int]):
-    theta = []; trans = []
-    for cid in cam_ids:
-        R = cam_params[cid]['R']; t = cam_params[cid]['t']
-        theta.append(R_to_rodrigues(R)); trans.append(t)
-    theta = np.concatenate(theta) if len(theta)>0 else np.zeros(0)
-    trans = np.concatenate(trans) if len(trans)>0 else np.zeros(0)
-    Xs = np.concatenate([X_map[pid] for pid in point_ids]) if len(point_ids)>0 else np.zeros(0)
-    return np.concatenate([theta, trans, Xs])
-
-def unpack_params(vec: np.ndarray, cam_params, cam_ids, point_ids):
-    idx = 0
-    for cid in cam_ids:
-        r = vec[idx:idx+3]; idx+=3
-        t = vec[idx:idx+3]; idx+=3
-        cam_params[cid]['R'] = rodrigues_to_R(r)
-        cam_params[cid]['t'] = t
-    X_map = {}
-    for pid in point_ids:
-        X_map[pid] = vec[idx:idx+3]; idx+=3
-    return cam_params, X_map
-
-def ba_residuals(param_vec, obs: List[Tuple[int,int,np.ndarray]], K_map, cam_params, cam_ids, point_ids):
-    cam_params_upd = {k: {'R': v['R'].copy(), 't': v['t'].copy()} for k,v in cam_params.items()}
-    cam_params_upd, X_map = unpack_params(param_vec, cam_params_upd, cam_ids, point_ids)
-    res = []
-    for (cid, pid, uv) in obs:
-        K = K_map[cid]; R = cam_params_upd[cid]['R']; t = cam_params_upd[cid]['t']
-        P = projection_matrix(K, R, t)
-        X = X_map[pid]
-        x = P @ np.hstack([X,1.0]); u = x[0]/x[2]; v = x[1]/x[2]
-        res.extend([u - uv[0], v - uv[1]])
-    return np.array(res, dtype=float)
-
-def run_global_ba(obs, K_map, cam_params, X_init):
-    try:
-        from scipy.optimize import least_squares
-    except Exception as e:
-        print('[BA] SciPy not available; skipping BA. Reason:', e)
-        return cam_params, X_init, None
-    cam_ids = sorted(list({cid for cid,_,_ in obs}))
-    point_ids = sorted(list(X_init.keys()))
-    if len(cam_ids) == 0 or len(point_ids) == 0:
-        print('[BA] Not enough variables; skipping.')
-        return cam_params, X_init, None
-    p0 = pack_params(cam_params, X_init, cam_ids, point_ids)
-    fun = lambda p: ba_residuals(p, obs, K_map, cam_params, cam_ids, point_ids)
-    res = least_squares(fun, p0, verbose=1, xtol=1e-8, ftol=1e-8, max_nfev=100)
-    cam_params_opt = {cid: {'R': cam_params[cid]['R'].copy(), 't': cam_params[cid]['t'].copy()} for cid in cam_ids}
-    cam_params_opt, X_opt = unpack_params(res.x, cam_params_opt, cam_ids, point_ids)
-    return cam_params_opt, X_opt, res
+# (Bundle Adjustment code removed to keep only triangulation.)
 
 # ============================
 # I/O helpers
@@ -306,25 +236,100 @@ def save_ply(points_xyz: np.ndarray, colors_rgb: np.ndarray, path: str):
 # Main
 # ============================
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--model_dir', required=True, help='Dir with cameras.bin, images.bin')
-    ap.add_argument('--csv', required=True, help='CSV: instance_id, frame, image_name, x, y')
-    ap.add_argument('--out_prefix', default='triangulated', help='Output prefix')
-    ap.add_argument('--min_views', type=int, default=2, help='Min views per instance')
-    # RANSAC
-    ap.add_argument('--ransac_thresh', type=float, default=2.0, help='RANSAC reprojection threshold (px)')
-    ap.add_argument('--ransac_iters', type=int, default=200, help='RANSAC max iterations (sampled pairs)')
-    ap.add_argument('--min_inliers', type=int, default=2, help='RANSAC: minimum inliers to accept point')
-    ap.add_argument('--pos_depth_ratio', type=float, default=0.5, help='Require positive depth on this fraction of views')
-    # BA
-    ap.add_argument('--do_ba', action='store_true', help='Run global BA (SciPy required)')
-    args = ap.parse_args()
-    os.makedirs(args.out_prefix.split('/')[0], exist_ok=True)
+def _resolve_model_bin_paths(model_dir: Path) -> Tuple[Path, Path, Path]:
+    """Resolve paths to cameras.bin and images.bin.
 
-    cam_path = Path(args.model_dir) / 'cameras.bin'
-    img_path = Path(args.model_dir) / 'images.bin'
-    assert cam_path.exists() and img_path.exists(), 'cameras.bin / images.bin not found.'
+    Accepts a COLMAP model directory which may be either:
+    - a directory that directly contains cameras.bin/images.bin
+    - a workspace directory that contains a 'sparse' subdir with numbered runs
+      (e.g., sparse/0, sparse/1). In this case, choose the highest-numbered
+      subfolder that contains both binaries.
+    Returns (cameras_bin_path, images_bin_path, chosen_dir).
+    Raises AssertionError if not found.
+    """
+    md = Path(model_dir)
+
+    # 1) Directly under model_dir
+    cam_direct = md / 'cameras.bin'
+    img_direct = md / 'images.bin'
+    if cam_direct.exists() and img_direct.exists():
+        return cam_direct, img_direct, md
+
+    # 2) If model_dir looks like .../sparse/<n>
+    if md.name.isdigit() and md.parent.name == 'sparse':
+        cam = md / 'cameras.bin'
+        img = md / 'images.bin'
+        if cam.exists() and img.exists():
+            return cam, img, md
+
+    # 3) If there's a 'sparse' directory inside model_dir, scan it
+    sp = md / 'sparse'
+    candidates: List[Path] = []
+    if sp.exists() and sp.is_dir():
+        # Case: binaries directly under 'sparse'
+        if (sp / 'cameras.bin').exists() and (sp / 'images.bin').exists():
+            candidates.append(sp)
+        # Case: numbered subfolders under 'sparse'
+        for sub in sp.iterdir():
+            if sub.is_dir() and (sub / 'cameras.bin').exists() and (sub / 'images.bin').exists():
+                candidates.append(sub)
+        if candidates:
+            numeric = [(int(p.name), p) for p in candidates if p.name.isdigit()]
+            if numeric:
+                numeric.sort(key=lambda x: x[0])
+                chosen = numeric[-1][1]
+            else:
+                # Fallback: choose the most recently modified candidate
+                chosen = max(candidates, key=lambda p: p.stat().st_mtime)
+            return chosen / 'cameras.bin', chosen / 'images.bin', chosen
+
+    # 4) Fallback: recursive search under model_dir for sibling binaries
+    found_dirs: List[Path] = []
+    try:
+        for img in md.rglob('images.bin'):
+            cam = img.parent / 'cameras.bin'
+            if cam.exists():
+                found_dirs.append(img.parent)
+    except Exception:
+        pass
+    if found_dirs:
+        numeric = [(int(p.name), p) for p in found_dirs if p.name.isdigit()]
+        if numeric:
+            numeric.sort(key=lambda x: x[0])
+            chosen = numeric[-1][1]
+        else:
+            # Prefer a dir under a 'sparse' ancestor if available
+            sparse_dirs = [p for p in found_dirs if 'sparse' in [a.name for a in p.parents]]
+            if sparse_dirs:
+                chosen = max(sparse_dirs, key=lambda p: p.stat().st_mtime)
+            else:
+                chosen = max(found_dirs, key=lambda p: p.stat().st_mtime)
+        return chosen / 'cameras.bin', chosen / 'images.bin', chosen
+
+    raise AssertionError('cameras.bin / images.bin not found under given model_dir (including sparse/*).')
+
+
+def run_triangulation(
+    model_dir: str,
+    tracks_csv: str,
+    out_prefix: str,
+    min_views: int = 2,
+    ransac_thresh: float = 2.0,
+    ransac_iters: int = 200,
+    min_inliers: int = 2,
+    pos_depth_ratio: float = 0.5,
+) -> Tuple[str, str]:
+    """
+    tracks.csv와 COLMAP 모델에서 RANSAC 삼각측량을 수행하고
+    `<out_prefix>_points.csv` 및 `<out_prefix>_points.ply`를 저장하여 경로를 반환합니다.
+    """
+    # 출력 경로 디렉토리 확보
+    out_dir = os.path.dirname(out_prefix)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    cam_path, img_path, chosen_dir = _resolve_model_bin_paths(Path(model_dir))
+    print(f'[*] Using COLMAP model dir: {chosen_dir}')
 
     cams = read_cameras_bin(str(cam_path))
     imgs = read_images_bin(str(img_path))
@@ -335,19 +340,21 @@ def main():
     image_id_to_pose = {img_id: {'R': qvec2rotmat(d['qvec']), 't': d['tvec'], 'camera_id': d['camera_id']}
                         for img_id, d in imgs.items()}
 
-    df = pd.read_csv(args.csv)
+    df = pd.read_csv(tracks_csv)
     req = {'instance_id','frame','image_name','x','y'}
     if not req.issubset(df.columns):
         raise ValueError(f'CSV must contain columns: {sorted(list(req))}')
     df = df.sort_values(['instance_id','frame']).reset_index(drop=True)
 
     # Build per-instance view lists
-    instances = {}
+    instances: Dict[int, Tuple[List[np.ndarray], List[np.ndarray], List[int]]] = {}
     for iid, g in df.groupby('instance_id'):
-        P_list = []; uv_list = []; used_image_ids = []
+        P_list: List[np.ndarray] = []
+        uv_list: List[np.ndarray] = []
+        used_image_ids: List[int] = []
         for _, row in g.iterrows():
             name = str(row['image_name'])
-            if name not in name_to_image_id: 
+            if name not in name_to_image_id:
                 continue
             img_id = name_to_image_id[name]
             pose = image_id_to_pose[img_id]
@@ -356,22 +363,22 @@ def main():
             P_list.append(P)
             uv_list.append(np.array([row['x'], row['y']], dtype=float))
             used_image_ids.append(img_id)
-        if len(P_list) >= max(2, args.min_views):
+        if len(P_list) >= max(2, min_views):
             instances[int(iid)] = (P_list, uv_list, used_image_ids)
 
     # RANSAC triangulation per instance
-    X_map = {}
-    stats = []
+    X_map: Dict[int, np.ndarray] = {}
+    stats: List[Dict[str, Any]] = []
     for iid in sorted(instances.keys()):
         P_list, uv_list, used_img_ids = instances[iid]
         Xr, inliers, info = ransac_triangulate(
             P_list, uv_list,
-            reproj_thresh_px=args.ransac_thresh,
-            max_iters=args.ransac_iters,
-            min_inliers=args.min_inliers,
-            require_pos_depth_ratio=args.pos_depth_ratio
+            reproj_thresh_px=ransac_thresh,
+            max_iters=ransac_iters,
+            min_inliers=min_inliers,
+            require_pos_depth_ratio=pos_depth_ratio,
         )
-        if int(inliers.sum()) < args.min_inliers:
+        if int(inliers.sum()) < min_inliers:
             continue
         X_map[iid] = Xr
         stats.append({'instance_id': iid,
@@ -382,8 +389,8 @@ def main():
                       'fallback_no_ransac': bool(info['fallback'])})
 
     # Save triangulated CSV + PLY
-    out_csv = f'{args.out_prefix}_points.csv'
-    recs = []
+    out_csv = f'{out_prefix}_points.csv'
+    recs: List[Dict[str, Any]] = []
     for s in stats:
         X = X_map[s['instance_id']]
         recs.append({'instance_id': s['instance_id'],
@@ -396,71 +403,40 @@ def main():
     pd.DataFrame.from_records(recs).to_csv(out_csv, index=False)
     print(f'[*] Saved: {out_csv} ({len(recs)} points)')
 
+    out_ply = f'{out_prefix}_points.ply'
     if len(recs) > 0:
         pts = np.vstack([X_map[s['instance_id']] for s in stats])
         cols = np.array([color_from_id(s['instance_id']) for s in stats], dtype=np.uint8)
-        out_ply = f'{args.out_prefix}_points.ply'
         save_ply(pts, cols, out_ply)
         print(f'[*] Saved: {out_ply}')
 
-    # Build BA problem (observations only for triangulated points)
-    if args.do_ba and len(X_map) > 0:
-        try:
-            from scipy.optimize import least_squares  # check availability
-        except Exception as e:
-            print('[BA] SciPy not available; skipping BA. Reason:', e)
-        else:
-            # Per-image extrinsics as variables; intrinsics fixed
-            # Only include images that observe at least one triangulated point
-            obs = []
-            involved_images = set()
-            for _, row in df.iterrows():
-                iid = int(row['instance_id'])
-                if iid not in X_map: 
-                    continue
-                name = str(row['image_name'])
-                if name not in name_to_image_id: 
-                    continue
-                img_id = name_to_image_id[name]
-                uv = np.array([row['x'], row['y']], dtype=float)
-                obs.append((img_id, iid, uv))
-                involved_images.add(img_id)
-
-            involved_images = sorted(list(involved_images))
-            if len(involved_images) == 0:
-                print('[BA] No involved images; skipping.')
-            else:
-                cam_params = {img_id: {'R': image_id_to_pose[img_id]['R'].copy(),
-                                       't': image_id_to_pose[img_id]['t'].copy()}
-                              for img_id in involved_images}
-                K_map = {img_id: K_by_cam[image_id_to_pose[img_id]['camera_id']] for img_id in involved_images}
-                obs_sel = [o for o in obs if o[0] in cam_params]
-
-                print('[*] Running global BA on involved images and triangulated points...')
-                cam_params_opt, X_opt, res = run_global_ba(obs_sel, K_map, cam_params, X_map)
-                if res is not None:
-                    print(f'[*] BA done. Final cost: {res.cost:.6f}, nfev={res.nfev}')
-
-                    # Save BA outputs
-                    out_npz = f'{args.out_prefix}_ba_results.npz'
-                    np.savez(out_npz,
-                             points_ids=np.array(sorted(list(X_opt.keys())), dtype=int),
-                             points_xyz=np.vstack([X_opt[i] for i in sorted(list(X_opt.keys()))]) if len(X_opt)>0 else np.zeros((0,3)),
-                             image_ids=np.array(involved_images, dtype=int),
-                             Rs=np.stack([cam_params_opt[i]['R'] for i in involved_images]) if len(involved_images)>0 else np.zeros((0,3,3)),
-                             ts=np.stack([cam_params_opt[i]['t'] for i in involved_images]) if len(involved_images)>0 else np.zeros((0,3)))
-                    print(f'[*] Saved: {out_npz}')
-
-                    # Also save BA-refined points as CSV for convenience
-                    out_csv_ba = f'{args.out_prefix}_points_ba.csv'
-                    recs_ba = []
-                    for pid in sorted(list(X_opt.keys())):
-                        Xb = X_opt[pid]
-                        recs_ba.append({'instance_id': pid, 'X': Xb[0], 'Y': Xb[1], 'Z': Xb[2]})
-                    pd.DataFrame.from_records(recs_ba).to_csv(out_csv_ba, index=False)
-                    print(f'[*] Saved: {out_csv_ba}')
-
     print('[*] Done.')
+    return out_csv, out_ply
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--model_dir', required=True, help='Dir with cameras.bin, images.bin')
+    ap.add_argument('--csv', required=True, help='CSV: instance_id, frame, image_name, x, y')
+    ap.add_argument('--out_prefix', default='triangulated', help='Output prefix')
+    ap.add_argument('--min_views', type=int, default=2, help='Min views per instance')
+    # RANSAC
+    ap.add_argument('--ransac_thresh', type=float, default=2.0, help='RANSAC reprojection threshold (px)')
+    ap.add_argument('--ransac_iters', type=int, default=200, help='RANSAC max iterations (sampled pairs)')
+    ap.add_argument('--min_inliers', type=int, default=2, help='RANSAC: minimum inliers to accept point')
+    ap.add_argument('--pos_depth_ratio', type=float, default=0.5, help='Require positive depth on this fraction of views')
+    args = ap.parse_args()
+
+    run_triangulation(
+        model_dir=args.model_dir,
+        tracks_csv=args.csv,
+        out_prefix=args.out_prefix,
+        min_views=args.min_views,
+        ransac_thresh=args.ransac_thresh,
+        ransac_iters=args.ransac_iters,
+        min_inliers=args.min_inliers,
+        pos_depth_ratio=args.pos_depth_ratio,
+    )
 
 if __name__ == '__main__':
     main()

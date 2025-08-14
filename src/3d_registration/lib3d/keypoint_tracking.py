@@ -296,6 +296,50 @@ def save_tracks_json_csv(tracks: Dict[int, List[dict]],
                     writer.writerow([tid, rec.get("frame"), rec.get("name"), rec.get("x"), rec.get("y")])
 
 
+def run_tracking(
+    json_dir: str,
+    pattern: str = "*.json",
+    conf_min: float = 0.8,
+    kp_conf_min: Optional[float] = None,
+    take: str = "all",
+    fill_missing: bool = True,
+    max_match_dist: float = 80.0,
+    max_missed: int = 2,
+    prefer_hungarian: bool = True,
+    out_json: str = "tracks.json",
+    out_csv: str = "tracks.csv",
+) -> Tuple[str, str]:
+    """
+    JSON 디렉토리에서 키포인트를 로드하고 인스턴스별 링크 후 저장.
+    반환: (out_json_path, out_csv_path)
+    """
+    frames_keypoints, frame_name_map = load_frames_keypoints_from_det_jsons(
+        json_dir,
+        pattern=pattern,
+        conf_min=conf_min,
+        kp_conf_min=kp_conf_min,
+        take=take,
+        fill_missing=fill_missing,
+    )
+
+    tracks = link_keypoints_by_instance(
+        frames_keypoints,
+        frame_name_map=frame_name_map,
+        max_match_dist=max_match_dist,
+        max_missed=max_missed,
+        prefer_hungarian=prefer_hungarian,
+    )
+
+    # 경로 디렉토리 생성
+    if out_json:
+        os.makedirs(os.path.dirname(out_json) or ".", exist_ok=True)
+    if out_csv:
+        os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+
+    save_tracks_json_csv(tracks, out_json, out_csv)
+    return out_json, out_csv
+
+
 # -----------------------------
 # 사용 예시
 # -----------------------------
