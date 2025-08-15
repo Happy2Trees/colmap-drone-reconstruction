@@ -1,7 +1,7 @@
 import argparse
 import os
 import json
-from typing import Optional
+from typing import Optional, List
 
 try:
     from .lib3d.keypoint_tracking import run_tracking
@@ -73,14 +73,19 @@ def parse_args():
     ap.add_argument('--min_inliers', type=int, default=3)
     ap.add_argument('--pos_depth_ratio', type=float, default=0.5)
 
-    # Registration params
-    ap.add_argument('--voxel_size', type=float, default=0.05)
-    ap.add_argument('--ransac_n', type=int, default=4)
-    ap.add_argument('--distance_thresh_ratio', type=float, default=1.5)
-    ap.add_argument('--icp_max_iter', type=int, default=50)
-    ap.add_argument('--reg_debug_dir', default='output/register_debug')
-    ap.add_argument('--with_scaling', action='store_true', default=True, help='Estimate scale (similarity transform) during registration')
-    ap.add_argument('--no_with_scaling', action='store_true', help='Disable scale estimation (rigid only)')
+    # Registration/Evaluation (PLY-based Umeyama + IRLS)
+    ap.add_argument('--voxel_size', type=float, default=0.05, help='Voxel size for NN pairing downsampling (alignment uses matched points)')
+    ap.add_argument('--reg_debug_dir', default='output/register_debug', help='Directory to save register_eval.json and debug indices')
+    # ap.add_argument('--aligned_ply_out', default=None, help='Output path for aligned triangulated points PLY')
+    # Explicit correspondences by vertex indices
+    ap.add_argument('--est_order', default='', help='Comma-separated source vertex indices (EST_ORDER). If empty, uses NN matching')
+    ap.add_argument('--gt_order',  default='', help='Comma-separated target vertex indices (GT_ORDER). If empty, uses NN matching')
+    # IRLS/Eval options
+    ap.add_argument('--eval_methods', default='L2,huber,cauchy', help='Comma-separated methods: L2,huber,cauchy')
+    ap.add_argument('--eval_with_scale', default='true,false', help='Comma-separated booleans for with_scale options: true,false')
+    # NN pairing options
+    ap.add_argument('--nn_bidir', default='true', help='Mutual NN required when using NN match (true/false)')
+    ap.add_argument('--nn_max_dist', type=float, default=None, help='Max NN distance threshold (same units as coordinates). None to disable')
 
     return ap.parse_args()
 
@@ -112,7 +117,6 @@ def main():
     fill_missing = False if args.no_fill_missing else args.fill_missing
     prefer_hungarian = False if args.no_prefer_hungarian else args.prefer_hungarian
     dedup_measure = False if args.no_dedup_measure else args.dedup_measure
-    with_scaling = False if args.no_with_scaling else args.with_scaling
 
     os.makedirs(os.path.dirname(args.out_prefix) or '.', exist_ok=True)
 
@@ -187,28 +191,70 @@ def main():
         except Exception as e:
             print(f'[!] Failed saving sampled measurement PLY: {e}')
 
-    # 4) Registration/Evaluation
+    # 4) Registration/Evaluation (PLY-based Umeyama + IRLS)
     if not args.skip_register:
-        if not (triangulated_ply and os.path.exists(measurement_ply)):
-            raise ValueError('Need triangulated PLY and measurement PLY for registration. Provide reuse paths or run previous steps.')
-        print('[*] Running registration and evaluation...')
+        if not (triangulated_ply and os.path.exists(triangulated_ply)):
+            raise ValueError('Triangulated PLY missing; provide --reuse_triangulated_ply or run triangulation.')
+        if not os.path.exists(measurement_ply):
+            raise ValueError('Measurement PLY missing; run measure_to_ply or provide correct path.')
+
+        # Parse lists
+        def parse_int_list(s: str) -> List[int]:
+            s = s.strip()
+            if not s:
+                return []
+            return [int(x.strip()) for x in s.split(',') if x.strip()]
+
+        def parse_bool_list(s: str) -> List[bool]:
+            out: List[bool] = []
+            for tok in s.split(','):
+                t = tok.strip().lower()
+                if not t:
+                    continue
+                if t in ('1','true','t','yes','y'): out.append(True)
+                elif t in ('0','false','f','no','n'): out.append(False)
+                else: raise ValueError(f'Invalid boolean: {tok}')
+            return out
+
+        est_order_list = parse_int_list(args.est_order)
+        gt_order_list = parse_int_list(args.gt_order)
+        methods = [m.strip() for m in args.eval_methods.split(',') if m.strip()]
+        with_scale_opts = parse_bool_list(args.eval_with_scale)
+        nn_bidir = parse_bool_list(args.nn_bidir)[0] if args.nn_bidir else True
+
+        # Decide explicit vs NN matching
+        if est_order_list and gt_order_list:
+            if len(est_order_list) != len(gt_order_list):
+                raise ValueError('Length mismatch: est_order vs gt_order')
+            source_indices = est_order_list
+            target_indices = gt_order_list
+        else:
+            source_indices = None
+            target_indices = None
+
+        print('[*] Running PLY-based registration/evaluation (Umeyama + IRLS)...')
         stats = register_and_eval(
             source_ply=triangulated_ply,
             target_ply=measurement_ply,
-            voxel_size=args.voxel_size,
-            ransac_n=args.ransac_n,
-            distance_thresh_ratio=args.distance_thresh_ratio,
-            icp_max_iter=args.icp_max_iter,
+            voxel_size=float(args.voxel_size),
             save_debug_dir=args.reg_debug_dir,
             aligned_ply_out=args.aligned_ply_out,
-            with_scaling=with_scaling,
+            # matching / eval options
+            source_indices=source_indices,
+            target_indices=target_indices,
+            methods=methods,
+            with_scale_options=with_scale_opts,
+            nn_bidir=bool(nn_bidir),
+            nn_max_dist=args.nn_max_dist,
         )
+        print(f'stats : {stats}')
         # Inform about aligned PLY if saved
         try:
             if args.aligned_ply_out and os.path.exists(args.aligned_ply_out):
                 print(f'[*] Saved aligned PLY: {args.aligned_ply_out}')
         except Exception:
             pass
+
         # Save summary next to out_prefix
         sum_path = os.path.join(os.path.dirname(args.out_prefix) or '.', 'register_eval.json')
         try:
