@@ -43,7 +43,12 @@ python -m src.3d_registration.main \
   --model_dir /path/to/colmap_model/sparse/0 \
   --exp_dir experiments/my_exp \
   --xyz_npy /hdd2/0321_block_drone_video/colmap/data/measurement_xyz.npy \
-  --candidate_txt /hdd2/0321_block_drone_video/colmap/data/candidate_list.txt
+  --candidate_txt /hdd2/0321_block_drone_video/colmap/data/candidate_list.txt \
+  --eval_methods "L2,huber,cauchy" \
+  --eval_with_scale "true,false" \
+  --voxel_size 0.05 \
+  --aligned_ply_out outputs/aligned_source.ply \
+  --reg_debug_dir outputs/register_debug
 ```
 
 주요 옵션(스텝 제어):
