@@ -68,6 +68,7 @@ def parse_args():
 
     # Triangulation params
     ap.add_argument('--min_views', type=int, default=2)
+    ap.add_argument('--ransac_method', default='ransac', choices=['ransac', 'magsac', 'superransac'], help='Robust estimator for triangulation')
     ap.add_argument('--ransac_thresh', type=float, default=3.0)
     ap.add_argument('--ransac_iters', type=int, default=400)
     ap.add_argument('--min_inliers', type=int, default=3)
@@ -163,6 +164,7 @@ def main():
             tracks_csv=tracks_csv,
             out_prefix=args.out_prefix,
             min_views=args.min_views,
+            ransac_method=args.ransac_method,
             ransac_thresh=args.ransac_thresh,
             ransac_iters=args.ransac_iters,
             min_inliers=args.min_inliers,

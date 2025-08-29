@@ -204,6 +204,158 @@ def ransac_triangulate(P_list, uv_list, reproj_thresh_px=2.0, max_iters=200, min
     info = {'num_inliers': int(len(in_idx)), 'mean_err': float(np.mean(errs)) if errs else None, 'max_err': float(np.max(errs)) if errs else None, 'fallback': False}
     return Xr, best_inliers, info
 
+
+def _residuals_all(X: np.ndarray, P_list: List[np.ndarray], uv_list: List[np.ndarray]) -> np.ndarray:
+    return np.array([np.linalg.norm(reproj_residuals(X, P_list[k], uv_list[k])) for k in range(len(P_list))], dtype=float)
+
+
+def _msac_cost(residuals: np.ndarray, thresh: float) -> float:
+    t2 = float(thresh) * float(thresh)
+    r2 = residuals * residuals
+    return float(np.sum(np.minimum(r2, t2)))
+
+
+def magsac_triangulate(P_list: List[np.ndarray], uv_list: List[np.ndarray], reproj_thresh_px: float = 2.0,
+                       max_iters: int = 200, min_inliers: int = 2, require_pos_depth_ratio: float = 0.5,
+                       seed: int = 42):
+    """
+    Approximate MAGSAC++ style: select hypothesis by MSAC cost and refine on inliers.
+    This is not a full MAGSAC++ implementation but follows the robust scoring spirit.
+    """
+    assert len(P_list) == len(uv_list) and len(P_list) >= 2
+    N = len(P_list)
+    rnd = random.Random(seed)
+    pairs = list(itertools.combinations(range(N), 2))
+    if len(pairs) > max_iters:
+        pairs_sampled = rnd.sample(pairs, max_iters)
+    else:
+        pairs_sampled = pairs
+
+    best_cost = float('inf')
+    best_X = None
+    best_inliers = None
+
+    for (i, j) in pairs_sampled:
+        P2 = [P_list[i], P_list[j]]
+        uv2 = [uv_list[i], uv_list[j]]
+        try:
+            Xc = triangulate_nviews(P2, uv2)
+        except Exception:
+            continue
+        if positive_depth_count(Xc, P2) < 2:
+            continue
+
+        res = _residuals_all(Xc, P_list, uv_list)
+        if positive_depth_count(Xc, P_list) < max(2, int(require_pos_depth_ratio * N)):
+            continue
+        cost = _msac_cost(res, reproj_thresh_px)
+        if cost < best_cost:
+            best_cost = cost
+            best_X = Xc
+            best_inliers = res <= reproj_thresh_px
+
+    if best_X is None:
+        # fallback to direct LS + GN
+        X0 = triangulate_nviews(P_list, uv_list)
+        inliers = np.ones(len(P_list), dtype=bool)
+        Xr = refine_point_gauss_newton(X0, P_list, uv_list, iters=15)
+        res = _residuals_all(Xr, P_list, uv_list)
+        return Xr, inliers, {'num_inliers': int(inliers.sum()), 'mean_err': float(np.mean(res)) if len(res)>0 else None, 'max_err': float(np.max(res)) if len(res)>0 else None, 'fallback': True}
+
+    # Local optimization on inliers
+    in_idx = np.where(best_inliers)[0].tolist()
+    P_in = [P_list[k] for k in in_idx]; uv_in = [uv_list[k] for k in in_idx]
+    X0 = triangulate_nviews(P_in, uv_in)
+    Xr = refine_point_gauss_newton(X0, P_in, uv_in, iters=15)
+    res_in = _residuals_all(Xr, P_in, uv_in)
+    info = {'num_inliers': int(len(in_idx)), 'mean_err': float(np.mean(res_in)) if len(res_in)>0 else None,
+            'max_err': float(np.max(res_in)) if len(res_in)>0 else None, 'fallback': False}
+    return Xr, np.array(best_inliers, dtype=bool), info
+
+
+def superransac_triangulate(P_list: List[np.ndarray], uv_list: List[np.ndarray], reproj_thresh_px: float = 2.0,
+                            max_iters: int = 500, min_inliers: int = 2, require_pos_depth_ratio: float = 0.5,
+                            seed: int = 42, lo_max_iters: int = 3, anneal: bool = True):
+    """
+    Approximate SuperRANSAC: LO-RANSAC with optional threshold annealing.
+    - Hypothesize from 2-view minimal samples
+    - Score by inlier count
+    - Local optimization: re-estimate from inliers + GN, reselect inliers (repeat up to lo_max_iters)
+    - Optional annealing: progressively tighten threshold as better models emerge
+    """
+    assert len(P_list) == len(uv_list) and len(P_list) >= 2
+    N = len(P_list)
+    rnd = random.Random(seed)
+    pairs = list(itertools.combinations(range(N), 2))
+    if len(pairs) > max_iters:
+        pairs_sampled = rnd.sample(pairs, max_iters)
+    else:
+        pairs_sampled = pairs
+
+    best_inliers = np.zeros(N, dtype=bool)
+    best_X = None
+    best_score = -1
+    cur_thresh = float(reproj_thresh_px)
+
+    def score_and_lo(X_init: np.ndarray, thresh: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        # Initial inliers
+        res = _residuals_all(X_init, P_list, uv_list)
+        inliers = res <= thresh
+        if int(inliers.sum()) < 2:
+            return X_init, inliers, float('-inf')
+        # LO iterations
+        X_lo = X_init.copy()
+        for _ in range(lo_max_iters):
+            idx = np.where(inliers)[0]
+            if len(idx) < 2:
+                break
+            P_in = [P_list[k] for k in idx]; uv_in = [uv_list[k] for k in idx]
+            X0 = triangulate_nviews(P_in, uv_in)
+            X_lo = refine_point_gauss_newton(X0, P_in, uv_in, iters=15)
+            res = _residuals_all(X_lo, P_list, uv_list)
+            new_inliers = res <= thresh
+            if np.array_equal(new_inliers, inliers):
+                break
+            inliers = new_inliers
+        score = int(inliers.sum())
+        return X_lo, inliers, float(score)
+
+    for (i, j) in pairs_sampled:
+        P2 = [P_list[i], P_list[j]]
+        uv2 = [uv_list[i], uv_list[j]]
+        try:
+            Xc = triangulate_nviews(P2, uv2)
+        except Exception:
+            continue
+        if positive_depth_count(Xc, P2) < 2:
+            continue
+        if positive_depth_count(Xc, P_list) < max(2, int(require_pos_depth_ratio * N)):
+            continue
+
+        X_lo, inl, score = score_and_lo(Xc, cur_thresh)
+        if score > best_score:
+            best_score = score
+            best_inliers = inl
+            best_X = X_lo
+            # Anneal threshold to be tighter as model improves
+            if anneal and best_score >= 3 and cur_thresh > 0.5 * reproj_thresh_px:
+                cur_thresh = max(0.5 * reproj_thresh_px, cur_thresh * 0.9)
+
+    if best_X is None:
+        X0 = triangulate_nviews(P_list, uv_list)
+        inliers = np.ones(N, dtype=bool)
+        Xr = refine_point_gauss_newton(X0, P_list, uv_list, iters=15)
+        res = _residuals_all(Xr, P_list, uv_list)
+        return Xr, inliers, {'num_inliers': int(inliers.sum()), 'mean_err': float(np.mean(res)) if len(res)>0 else None, 'max_err': float(np.max(res)) if len(res)>0 else None, 'fallback': True}
+
+    # Final stats on inliers
+    idx = np.where(best_inliers)[0]
+    P_in = [P_list[k] for k in idx]; uv_in = [uv_list[k] for k in idx]
+    res_in = _residuals_all(best_X, P_in, uv_in)
+    info = {'num_inliers': int(len(idx)), 'mean_err': float(np.mean(res_in)) if len(res_in)>0 else None,
+            'max_err': float(np.max(res_in)) if len(res_in)>0 else None, 'fallback': False}
+    return best_X, np.array(best_inliers, dtype=bool), info
+
 # (Bundle Adjustment code removed to keep only triangulation.)
 
 # ============================
@@ -314,6 +466,7 @@ def run_triangulation(
     tracks_csv: str,
     out_prefix: str,
     min_views: int = 2,
+    ransac_method: str = 'ransac',
     ransac_thresh: float = 2.0,
     ransac_iters: int = 200,
     min_inliers: int = 2,
@@ -366,18 +519,35 @@ def run_triangulation(
         if len(P_list) >= max(2, min_views):
             instances[int(iid)] = (P_list, uv_list, used_image_ids)
 
-    # RANSAC triangulation per instance
+    # Robust triangulation per instance
     X_map: Dict[int, np.ndarray] = {}
     stats: List[Dict[str, Any]] = []
     for iid in sorted(instances.keys()):
         P_list, uv_list, used_img_ids = instances[iid]
-        Xr, inliers, info = ransac_triangulate(
-            P_list, uv_list,
-            reproj_thresh_px=ransac_thresh,
-            max_iters=ransac_iters,
-            min_inliers=min_inliers,
-            require_pos_depth_ratio=pos_depth_ratio,
-        )
+        if ransac_method.lower() == 'magsac':
+            Xr, inliers, info = magsac_triangulate(
+                P_list, uv_list,
+                reproj_thresh_px=ransac_thresh,
+                max_iters=ransac_iters,
+                min_inliers=min_inliers,
+                require_pos_depth_ratio=pos_depth_ratio,
+            )
+        elif ransac_method.lower() == 'superransac':
+            Xr, inliers, info = superransac_triangulate(
+                P_list, uv_list,
+                reproj_thresh_px=ransac_thresh,
+                max_iters=max(ransac_iters, 300),
+                min_inliers=min_inliers,
+                require_pos_depth_ratio=pos_depth_ratio,
+            )
+        else:
+            Xr, inliers, info = ransac_triangulate(
+                P_list, uv_list,
+                reproj_thresh_px=ransac_thresh,
+                max_iters=ransac_iters,
+                min_inliers=min_inliers,
+                require_pos_depth_ratio=pos_depth_ratio,
+            )
         if int(inliers.sum()) < min_inliers:
             continue
         X_map[iid] = Xr
@@ -421,6 +591,7 @@ def main():
     ap.add_argument('--out_prefix', default='triangulated', help='Output prefix')
     ap.add_argument('--min_views', type=int, default=2, help='Min views per instance')
     # RANSAC
+    ap.add_argument('--ransac_method', default='ransac', choices=['ransac', 'magsac', 'superransac'], help='Robust estimator for triangulation')
     ap.add_argument('--ransac_thresh', type=float, default=2.0, help='RANSAC reprojection threshold (px)')
     ap.add_argument('--ransac_iters', type=int, default=200, help='RANSAC max iterations (sampled pairs)')
     ap.add_argument('--min_inliers', type=int, default=2, help='RANSAC: minimum inliers to accept point')
@@ -432,6 +603,7 @@ def main():
         tracks_csv=args.csv,
         out_prefix=args.out_prefix,
         min_views=args.min_views,
+        ransac_method=args.ransac_method,
         ransac_thresh=args.ransac_thresh,
         ransac_iters=args.ransac_iters,
         min_inliers=args.min_inliers,
