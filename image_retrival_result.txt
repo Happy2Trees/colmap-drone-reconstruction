@@ -1,0 +1,3 @@
+[기준 이미지] data/sec2_7x/img_05853.jpg
+[가장 유사한 이미지] data/sec2_7x/img_08917.jpg
+[similarity] 0.16722809923709475

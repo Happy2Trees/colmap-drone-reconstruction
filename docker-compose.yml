@@ -9,6 +9,11 @@ services:
       - seccomp=unconfined
       - apparmor=unconfined
     container_name: colmap_ct
+    image: glomap
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    container_name: glomap_ct
     ipc: host
     environment:
       - NVIDIA_VISIBLE_DEVICES=4,5,6,7

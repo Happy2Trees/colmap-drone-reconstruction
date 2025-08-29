@@ -1,9 +1,6 @@
-FROM nvcr.io/nvidia/pytorch:24.12-py3 as builder
+FROM nvcr.io/nvidia/pytorch:24.12-py3
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-c"]
-
-
-
 ####################################################################################################
 # Prevent stop building ubuntu at time zone selection.
 ARG COLMAP_GIT_COMMIT=3.11.1
@@ -36,16 +33,33 @@ RUN apt-get update && \
         libcgal-dev \
         libceres-dev
 
+# install cudss
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+RUN  dpkg -i cuda-keyring_1.1-1_all.deb
+RUN apt-get update
+RUN apt-get -y install cudss
 
-# Build and install COLMAP.
+
+# install ceres-solver
+WORKDIR /temp
+RUN git clone --recurse-submodules -j8 https://github.com/ceres-solver/ceres-solver && \
+    cd ceres-solver && \
+    git checkout 46b4b3b002994ddb9d6fc72268c3e271243cd1df && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j 64 && \
+    make install
+
+
+# Build and install COLMAP. 3.11.1
 RUN git clone https://github.com/colmap/colmap.git
 RUN cd colmap && \
     git fetch https://github.com/colmap/colmap.git ${COLMAP_GIT_COMMIT} && \
     git checkout FETCH_HEAD && \
     mkdir build && \
     cd build && \
-    cmake .. -GNinja -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
-        -DCMAKE_INSTALL_PREFIX=/colmap-install && \
+    cmake .. -GNinja -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} && \
     ninja install
 
 
@@ -78,6 +92,14 @@ RUN apt-get update && \
         libqt5opengl5-dev \
         libcgal-dev \
         libceres-dev
+WORKDIR /temp
+RUN git clone --recursive https://github.com/colmap/glomap.git
+RUN cd glomap && \
+    mkdir build && \
+    cd build && \
+    cmake .. -GNinja -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} -DCMAKE_CXX_FLAGS='-mno-avx512f -mno-avx512dq -mno-avx512vl -Wno-error=array-bounds -Wno-error=stringop-overread' && \
+    ninja && ninja install
+
 ######## PIP
 # OS 패키지 업데이트 및 필요한 패키지 설치
 RUN apt-get update && apt-get install -y \
@@ -106,41 +128,25 @@ RUN echo "Etc/UTC" > /etc/timezone && \
 WORKDIR /temp
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
-# Co-tracker 설치
-COPY submodules/co-tracker ./submodules/co-tracker
-RUN pip install -e ./submodules/co-tracker
+# # # Co-tracker 설치
+# # COPY submodules/co-tracker ./submodules/co-tracker
+# # RUN pip install -e ./submodules/co-tracker
 
 
-# xformers
-RUN git clone --branch v0.0.29.post3 --recursive https://github.com/facebookresearch/xformers.git
-RUN git config --global --add safe.directory /temp/xformers && \
-    git config --global --add safe.directory /temp/xformers/third_party/flash-attention && \
-    git config --global --add safe.directory /temp/xformers/third_party/cutlass
-RUN cd xformers && echo '' > requirements.txt
-WORKDIR /temp/xformers
-RUN pip install ninja
+# # xformers
+# RUN git clone --branch v0.0.29.post3 --recursive https://github.com/facebookresearch/xformers.git
+# RUN git config --global --add safe.directory /temp/xformers && \
+#     git config --global --add safe.directory /temp/xformers/third_party/flash-attention && \
+#     git config --global --add safe.directory /temp/xformers/third_party/cutlass
+# RUN cd xformers && echo '' > requirements.txt
+# WORKDIR /temp/xformers
+# RUN pip install ninja
+# # cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-mno-avx512f -mno-avx512dq -mno-avx512vl -Wno-error=array-bounds -Wno-error=stringop-overread'
+# # A6000 GPU (Ampere, compute capability 8.6)를 위한 설정
+# ENV TORCH_CUDA_ARCH_LIST="8.6"
+# ARG MAX_JOBS=16
+# RUN pip install -vv -e .
 
-# A6000 GPU (Ampere, compute capability 8.6)를 위한 설정
-ENV TORCH_CUDA_ARCH_LIST="8.6"
-ARG MAX_JOBS=16
-RUN pip install -vv -e .
 
-
-# Install nvm, Node.js, and Claude Code
-WORKDIR /temp
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && \
-    export NVM_DIR="$HOME/.nvm" && \
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && \
-    nvm install 22 && \
-    nvm use 22 && \
-    npm install -g @anthropic-ai/claude-code
-
-# Add nvm to bashrc for interactive shells
-RUN echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc && \
-    echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc
-
-    
-# 컨테이너 시작 시 bash 실행
-COPY --from=builder /colmap-install/ /usr/local/
 
 CMD ["/bin/bash"]   

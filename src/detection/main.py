@@ -183,6 +183,8 @@ def do_train(args: argparse.Namespace) -> None:
         # Loss weights: lower box, higher pose
         box=5.0,
         pose=15.0,
+        # box=5.0,
+        # pose=15.0,
     )
 
     # Some options may vary by ultralytics version; run with a safe subset if needed
