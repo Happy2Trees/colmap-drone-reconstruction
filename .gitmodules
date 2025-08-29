@@ -22,3 +22,6 @@
 [submodule "submodules/Patch-NetVLAD"]
 	path = submodules/Patch-NetVLAD
 	url = https://github.com/QVPR/Patch-NetVLAD
+[submodule "reference/glomap"]
+	path = reference/glomap
+	url = https://github.com/colmap/glomap
