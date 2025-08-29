@@ -19,3 +19,6 @@
 [submodule "reference/AAMED"]
 	path = reference/AAMED
 	url = https://github.com/Li-Zhaoxi/AAMED.git
+[submodule "submodules/Patch-NetVLAD"]
+	path = submodules/Patch-NetVLAD
+	url = https://github.com/QVPR/Patch-NetVLAD

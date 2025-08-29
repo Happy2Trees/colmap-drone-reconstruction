@@ -181,8 +181,8 @@ def do_train(args: argparse.Namespace) -> None:
         project=str(Path("outputs") / "yolo_pose"),
         name=args.run_name,
         # Loss weights: lower box, higher pose
-        box=5.0,
-        pose=15.0,
+        # box=5.0,
+        # pose=15.0,
     )
 
     # Some options may vary by ultralytics version; run with a safe subset if needed
